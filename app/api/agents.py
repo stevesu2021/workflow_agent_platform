@@ -57,6 +57,22 @@ async def get_agent(agent_id: uuid.UUID, session: AsyncSession = Depends(get_ses
         updated_at=agent.updated_at
     )
 
+@router.get("/{agent_id}/flow", response_model=dict)
+async def get_agent_flow(agent_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    service = AgentService(session)
+    version = await service.get_latest_version(agent_id)
+    if not version:
+        raise HTTPException(status_code=404, detail="Agent flow not found")
+    return version.flow_json
+
+@router.get("/{agent_id}/export", response_model=dict)
+async def export_agent_yaml(agent_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    service = AgentService(session)
+    yaml_content = await service.export_agent_yaml(agent_id)
+    if not yaml_content:
+        raise HTTPException(status_code=404, detail="Agent or version not found")
+    return {"yaml": yaml_content, "filename": f"agent_{agent_id}.yaml"}
+
 @router.delete("/{agent_id}")
 async def delete_agent(agent_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
     service = AgentService(session)

@@ -34,7 +34,7 @@ function getItem(
 const items: MenuItem[] = [
   getItem('概览', '/', <PieChartOutlined />),
   getItem('智能体管理', '/agents', <RobotOutlined />),
-  getItem('工作流编排', '/studio', <NodeIndexOutlined />),
+  getItem('工作流编排', '/workflow', <NodeIndexOutlined />),
   getItem('知识库', '/knowledge', <BookOutlined />),
   getItem('系统设置', '/settings', <SettingOutlined />),
 ];

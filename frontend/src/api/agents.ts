@@ -54,4 +54,18 @@ export const agentsApi = {
     });
     if (!response.ok) throw new Error('Failed to delete agent');
   },
+
+  // 导出智能体 YAML
+  exportYaml: async (id: string): Promise<{ yaml: string; filename: string }> => {
+    const response = await fetch(`${BASE_URL}/${id}/export`);
+    if (!response.ok) throw new Error('Failed to export agent');
+    return response.json();
+  },
+
+  // 获取智能体流程图 JSON
+  getFlow: async (id: string): Promise<any> => {
+      const response = await fetch(`${BASE_URL}/${id}/flow`);
+      if (!response.ok) throw new Error('Failed to fetch agent flow');
+      return response.json();
+  },
 };

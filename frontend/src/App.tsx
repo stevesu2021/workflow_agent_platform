@@ -16,8 +16,8 @@ function App() {
         <Route path="/" element={<MainLayout />}>
           <Route index element={<Home />} />
           <Route path="agents" element={<AgentList />} />
-          <Route path="studio" element={<WorkflowStudio />} />
-          <Route path="studio/:id" element={<WorkflowStudio />} />
+          <Route path="workflow" element={<WorkflowStudio />} />
+          <Route path="workflow/:id" element={<WorkflowStudio />} />
           <Route path="knowledge" element={<KnowledgeBase />} />
           <Route path="knowledge/:id" element={<KnowledgeBaseDetail />} />
           <Route path="settings" element={<Settings />} />

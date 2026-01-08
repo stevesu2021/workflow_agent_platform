@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState, useMemo } from 'react';
+import React, { useCallback, useRef, useState, useMemo, useEffect } from 'react';
 import ReactFlow, {
   MiniMap,
   Controls,
@@ -12,7 +12,7 @@ import type { Connection, Edge, Node, ReactFlowInstance } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Tabs, Button, Modal, Form, Input, message } from 'antd';
-import { SaveOutlined } from '@ant-design/icons';
+import { SaveOutlined, ExportOutlined } from '@ant-design/icons';
 import { Sidebar } from './workflow/Sidebar';
 import { DebugPanel } from './workflow/DebugPanel';
 import { PropertyPanel } from './workflow/PropertyPanel';
@@ -57,6 +57,33 @@ const WorkflowStudioContent: React.FC = () => {
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveForm] = Form.useForm();
 
+  // Load agent data if editing
+  useEffect(() => {
+    if (workflowId) {
+        setSaveLoading(true);
+        // Fetch flow JSON directly to restore canvas
+        agentsApi.getFlow(workflowId).then(flowJson => {
+            if (flowJson && flowJson.nodes && flowJson.edges) {
+                setNodes(flowJson.nodes.map((node: any) => ({
+                    ...node,
+                    // Ensure 'common' type is set for UI if it's one of the tool types
+                    type: ['start', 'end'].includes(node.type) ? node.type : 'common',
+                    data: {
+                        ...node.data,
+                        originalType: node.type // Restore original type
+                    }
+                })));
+                setEdges(flowJson.edges);
+            }
+        }).catch(err => {
+            console.error("Failed to load agent flow:", err);
+            message.error("Failed to load agent workflow");
+        }).finally(() => {
+            setSaveLoading(false);
+        });
+    }
+  }, [workflowId, setNodes, setEdges]);
+  
   const handleSave = async (values: { name: string; description?: string }) => {
     if (!reactFlowInstance) return;
 
@@ -150,6 +177,33 @@ const WorkflowStudioContent: React.FC = () => {
           description: ''
       });
       setIsSaveModalOpen(true);
+  };
+
+  const handleExportYaml = async () => {
+    if (!workflowId) {
+        message.warning('Please save the workflow first to export.');
+        return;
+    }
+    
+    try {
+        const { yaml, filename } = await agentsApi.exportYaml(workflowId);
+        
+        // Create a download link
+        const blob = new Blob([yaml], { type: 'text/yaml' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        message.success('Exported successfully');
+    } catch (error) {
+        console.error('Export failed:', error);
+        message.error('Failed to export YAML');
+    }
   };
 
   const nodeTypes = useMemo(() => ({
@@ -269,9 +323,16 @@ const WorkflowStudioContent: React.FC = () => {
     <div style={{ width: '100%', height: 'calc(100vh - 120px)' }}>
       <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3>{workflowId ? `Editing Agent Workflow: ${workflowId}` : 'New Agent Workflow'}</h3>
-          <Button type="primary" icon={<SaveOutlined />} onClick={openSaveModal}>
-            保存
-          </Button>
+          <div>
+            {workflowId && (
+                <Button icon={<ExportOutlined />} onClick={handleExportYaml} style={{ marginRight: 8 }}>
+                    导出 YAML
+                </Button>
+            )}
+            <Button type="primary" icon={<SaveOutlined />} onClick={openSaveModal}>
+                保存
+            </Button>
+          </div>
       </div>
       
       <div style={{ height: '100%', border: '1px solid #ddd', borderRadius: '4px', background: '#fff', display: 'flex', flexDirection: 'column' }}>

@@ -2,6 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.models.agent import Agent, AgentVersion
 from app.schemas.agent_schema import AgentCreate, AgentUpdate
+from typing import Optional
 import uuid
 
 class AgentService:
@@ -68,3 +69,28 @@ class AgentService:
         await self.session.delete(agent)
         await self.session.commit()
         return True
+
+    async def export_agent_yaml(self, agent_id: uuid.UUID) -> Optional[str]:
+        import yaml
+        
+        agent = await self.get_agent(agent_id)
+        if not agent:
+            return None
+            
+        version = await self.get_latest_version(agent_id)
+        if not version:
+            return None
+            
+        # Structure the export data
+        export_data = {
+            "agent": {
+                "name": agent.name,
+                "description": agent.description,
+                "version": version.version
+            },
+            "flow": version.flow_json,
+            "config": version.config
+        }
+        
+        return yaml.dump(export_data, default_flow_style=False, sort_keys=False, allow_unicode=True)
+

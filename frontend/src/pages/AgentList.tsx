@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Table, Button, Space, Tag, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { PlusOutlined, EditOutlined, DeleteOutlined, ExportOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { agentsApi } from '../api/agents';
 import type { Agent } from '../types/agent';
@@ -39,6 +39,28 @@ const AgentList: React.FC = () => {
       }
   };
 
+  const handleExport = async (id: string) => {
+      try {
+          const { yaml, filename } = await agentsApi.exportYaml(id);
+          
+          // Create a download link
+          const blob = new Blob([yaml], { type: 'text/yaml' });
+          const url = window.URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          window.URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          
+          message.success('Exported successfully');
+      } catch (error) {
+          console.error('Export failed:', error);
+          message.error('Failed to export YAML');
+      }
+  };
+
   const columns: ColumnsType<Agent> = [
     {
       title: 'Name',
@@ -72,6 +94,7 @@ const AgentList: React.FC = () => {
       render: (_, record) => (
         <Space size="middle">
           <Button icon={<EditOutlined />} onClick={() => navigate(`/workflow/${record.id}`)}>Edit</Button>
+          <Button icon={<ExportOutlined />} onClick={() => handleExport(record.id)}>Export</Button>
           <Button icon={<DeleteOutlined />} danger onClick={() => handleDelete(record.id)}>Delete</Button>
         </Space>
       ),
