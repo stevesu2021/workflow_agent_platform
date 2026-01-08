@@ -10,14 +10,16 @@ import ReactFlow, {
 } from 'reactflow';
 import type { Connection, Edge, Node, ReactFlowInstance } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { useParams } from 'react-router-dom';
-import { Tabs } from 'antd';
+import { useParams, useNavigate } from 'react-router-dom';
+import { Tabs, Button, Modal, Form, Input, message } from 'antd';
+import { SaveOutlined } from '@ant-design/icons';
 import { Sidebar } from './workflow/Sidebar';
 import { DebugPanel } from './workflow/DebugPanel';
 import { PropertyPanel } from './workflow/PropertyPanel';
 import { StartNode } from './workflow/nodes/StartNode';
 import { CommonNode } from './workflow/nodes/CommonNode';
 import { EndNode } from './workflow/nodes/EndNode';
+import { agentsApi } from '../api/agents';
 
 const initialNodes: Node[] = [
   { 
@@ -43,11 +45,112 @@ const getId = () => `node_${id++}`;
 
 const WorkflowStudioContent: React.FC = () => {
   const { id: workflowId } = useParams();
+  const navigate = useNavigate();
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance | null>(null);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  
+  // Save modal state
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [saveForm] = Form.useForm();
+
+  const handleSave = async (values: { name: string; description?: string }) => {
+    if (!reactFlowInstance) return;
+
+    setSaveLoading(true);
+    try {
+        const flowObject = reactFlowInstance.toObject();
+        // react-flow's toObject() returns { nodes, edges, viewport }
+        // Our backend expects { nodes, edges } for flow_json
+        
+        // Ensure flow_json matches AgentGraph schema (nodes, edges)
+        // Clean node data to match NodeData schema
+        const flowJson = {
+            nodes: flowObject.nodes.map(node => {
+                // Ensure data fields match NodeData schema
+                const { originalType, output_params, ...restData } = node.data || {};
+                
+                // Map frontend fields to backend NodeData schema
+                // Frontend uses 'originalType' sometimes, but backend expects type in Node.type (which is already mapped)
+                // Backend NodeData allows extra fields (Config.extra = "allow"), but we should be careful.
+                
+                // Determine the correct backend type
+                // Frontend uses 'common' for drag-and-drop nodes, but backend requires specific types like 'llm', 'tool', etc.
+                // We stored the specific type in 'originalType' or 'type' (if not common)
+                let backendType = node.type;
+                if (node.type === 'common' && node.data?.originalType) {
+                    backendType = node.data.originalType;
+                }
+                
+                return {
+                    id: node.id,
+                    type: backendType, // 'start', 'end', 'llm', 'tool', etc.
+                    position: node.position,
+                    data: {
+                        label: node.data.label,
+                        // Pass through other known fields
+                        model: node.data.model,
+                        prompt: node.data.system_prompt, // Frontend uses system_prompt, backend uses prompt? Let's check schema.
+                        temperature: node.data.temperature ? Number(node.data.temperature) : 0.7,
+                        tool_id: node.data.tool_name, // Frontend uses tool_name?
+                        knowledge_id: node.data.knowledge_base_id,
+                        // Keep original data for frontend restoration if needed, 
+                        // but be aware that backend validation might fail if type mismatches.
+                        ...restData,
+                        // Explicitly include output_params as it's used in frontend
+                        output_params: output_params
+                    }
+                };
+            }),
+            edges: flowObject.edges.map(edge => ({
+                id: edge.id,
+                source: edge.source,
+                target: edge.target,
+                label: edge.label,
+                ...(edge.data ? { data: edge.data } : {})
+            }))
+        };
+        
+        if (workflowId) {
+             // Update existing
+             await agentsApi.update(workflowId, {
+                 name: values.name,
+                 description: values.description,
+                 // Also update the flow
+                 flow_json: flowJson
+             });
+             message.success('Agent updated successfully');
+             navigate('/agents');
+        } else {
+            // Create new
+            const newAgent = await agentsApi.create({
+                name: values.name,
+                description: values.description,
+                flow_json: flowJson
+            });
+            message.success('Agent created successfully');
+            navigate('/agents');
+        }
+        
+        setIsSaveModalOpen(false);
+    } catch (error) {
+        console.error(error);
+        message.error('Failed to save agent');
+    } finally {
+        setSaveLoading(false);
+    }
+  };
+
+  const openSaveModal = () => {
+      saveForm.setFieldsValue({
+          name: '', // You might want to pre-fill if editing
+          description: ''
+      });
+      setIsSaveModalOpen(true);
+  };
 
   const nodeTypes = useMemo(() => ({
     start: StartNode,
@@ -166,6 +269,9 @@ const WorkflowStudioContent: React.FC = () => {
     <div style={{ width: '100%', height: 'calc(100vh - 120px)' }}>
       <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3>{workflowId ? `Editing Agent Workflow: ${workflowId}` : 'New Agent Workflow'}</h3>
+          <Button type="primary" icon={<SaveOutlined />} onClick={openSaveModal}>
+            保存
+          </Button>
       </div>
       
       <div style={{ height: '100%', border: '1px solid #ddd', borderRadius: '4px', background: '#fff', display: 'flex', flexDirection: 'column' }}>
@@ -211,6 +317,33 @@ const WorkflowStudioContent: React.FC = () => {
             {activeKey === 'debug' && <DebugPanel nodes={nodes} />}
         </div>
       </div>
+      <Modal
+        title={workflowId ? "Update Agent" : "Save New Agent"}
+        open={isSaveModalOpen}
+        onOk={saveForm.submit}
+        onCancel={() => setIsSaveModalOpen(false)}
+        confirmLoading={saveLoading}
+      >
+          <Form
+            form={saveForm}
+            layout="vertical"
+            onFinish={handleSave}
+          >
+              <Form.Item
+                name="name"
+                label="Agent Name"
+                rules={[{ required: true, message: 'Please input the agent name!' }]}
+              >
+                  <Input placeholder="Enter agent name" />
+              </Form.Item>
+              <Form.Item
+                name="description"
+                label="Description"
+              >
+                  <Input.TextArea rows={3} placeholder="Enter agent description" />
+              </Form.Item>
+          </Form>
+      </Modal>
     </div>
   );
 };

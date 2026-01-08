@@ -1,36 +1,43 @@
 import React, { useState, useEffect } from 'react';
-import { Table, Button, Space, Tag } from 'antd';
+import { Table, Button, Space, Tag, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-
-interface Agent {
-  key: string;
-  name: string;
-  description: string;
-  status: 'active' | 'inactive';
-  updatedAt: string;
-}
+import { agentsApi } from '../api/agents';
+import type { Agent } from '../types/agent';
 
 const AgentList: React.FC = () => {
   const navigate = useNavigate();
-  // Mock data for now
-  const [data, setData] = useState<Agent[]>([
-    {
-      key: '1',
-      name: 'Customer Support Bot',
-      description: 'Handles general inquiries and refunds.',
-      status: 'active',
-      updatedAt: '2023-10-25',
-    },
-    {
-      key: '2',
-      name: 'Data Analysis Agent',
-      description: 'Analyzes sales data and generates reports.',
-      status: 'inactive',
-      updatedAt: '2023-10-20',
-    },
-  ]);
+  const [data, setData] = useState<Agent[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const fetchAgents = async () => {
+    setLoading(true);
+    try {
+      const agents = await agentsApi.getAll();
+      setData(agents);
+    } catch (error) {
+      console.error('Failed to fetch agents:', error);
+      message.error('Failed to fetch agents');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAgents();
+  }, []);
+
+  const handleDelete = async (id: string) => {
+      try {
+          await agentsApi.delete(id);
+          message.success('Agent deleted successfully');
+          fetchAgents();
+      } catch (error) {
+          console.error('Failed to delete agent:', error);
+          message.error('Failed to delete agent');
+      }
+  };
 
   const columns: ColumnsType<Agent> = [
     {
@@ -47,25 +54,25 @@ const AgentList: React.FC = () => {
     {
       title: 'Status',
       key: 'status',
-      dataIndex: 'status',
-      render: (status) => (
-        <Tag color={status === 'active' ? 'green' : 'volcano'}>
-          {status.toUpperCase()}
+      render: () => (
+        <Tag color="green">
+          ACTIVE
         </Tag>
       ),
     },
     {
       title: 'Last Updated',
-      dataIndex: 'updatedAt',
-      key: 'updatedAt',
+      dataIndex: 'updated_at',
+      key: 'updated_at',
+      render: (text) => text ? new Date(text).toLocaleString() : '-',
     },
     {
       title: 'Action',
       key: 'action',
       render: (_, record) => (
         <Space size="middle">
-          <Button icon={<EditOutlined />} onClick={() => navigate(`/studio/${record.key}`)}>Edit</Button>
-          <Button icon={<DeleteOutlined />} danger>Delete</Button>
+          <Button icon={<EditOutlined />} onClick={() => navigate(`/workflow/${record.id}`)}>Edit</Button>
+          <Button icon={<DeleteOutlined />} danger onClick={() => handleDelete(record.id)}>Delete</Button>
         </Space>
       ),
     },
@@ -75,11 +82,11 @@ const AgentList: React.FC = () => {
     <div>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2>My Agents</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/studio')}>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/workflow')}>
           Create New Agent
         </Button>
       </div>
-      <Table columns={columns} dataSource={data} />
+      <Table columns={columns} dataSource={data} rowKey="id" loading={loading} />
     </div>
   );
 };

@@ -73,7 +73,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes }) => {
         <div style={{ fontSize: '12px', color: '#999', marginBottom: '8px' }}>当前编排用到的组件</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {usedResources.map((item, index) => (
-                <Card key={index} size="small" bodyStyle={{ padding: '8px 12px' }}>
+                <Card key={index} size="small" styles={{ body: { padding: '8px 12px' } }}>
                     <Typography.Text>{item}</Typography.Text>
                 </Card>
             ))}

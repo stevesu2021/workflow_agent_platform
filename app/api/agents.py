@@ -56,3 +56,11 @@ async def get_agent(agent_id: uuid.UUID, session: AsyncSession = Depends(get_ses
         created_at=agent.created_at,
         updated_at=agent.updated_at
     )
+
+@router.delete("/{agent_id}")
+async def delete_agent(agent_id: uuid.UUID, session: AsyncSession = Depends(get_session)):
+    service = AgentService(session)
+    success = await service.delete_agent(agent_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return {"message": "Agent deleted successfully"}

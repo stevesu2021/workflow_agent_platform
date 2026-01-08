@@ -44,3 +44,27 @@ class AgentService:
         stmt = select(AgentVersion).where(AgentVersion.agent_id == agent_id).order_by(AgentVersion.version.desc())
         result = await self.session.execute(stmt)
         return result.scalars().first()
+
+    async def delete_agent(self, agent_id: uuid.UUID) -> bool:
+        agent = await self.get_agent(agent_id)
+        if not agent:
+            return False
+        
+        # Manually delete versions first because SQLite FK constraints might be tricky 
+        # or SQLAlchemy relationship cascade might not trigger if not loaded
+        # However, with "delete-orphan" cascade configured on relationship, 
+        # we usually need to load the object with relationship or let DB handle it.
+        # Given the error "NOT NULL constraint failed: agentversion.agent_id", 
+        # it seems SQLAlchemy is trying to set agent_id to NULL instead of deleting.
+        # This happens when cascade is not set to "delete".
+        
+        # To be safe and explicit:
+        stmt = select(AgentVersion).where(AgentVersion.agent_id == agent_id)
+        result = await self.session.execute(stmt)
+        versions = result.scalars().all()
+        for version in versions:
+            await self.session.delete(version)
+            
+        await self.session.delete(agent)
+        await self.session.commit()
+        return True

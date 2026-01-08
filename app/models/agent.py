@@ -15,7 +15,7 @@ class Agent(AgentBase, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     
-    versions: List["AgentVersion"] = Relationship(back_populates="agent")
+    versions: List["AgentVersion"] = Relationship(back_populates="agent", sa_relationship_kwargs={"cascade": "all, delete-orphan"})
 
 class AgentVersion(SQLModel, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
