@@ -1,0 +1,3 @@
+*.pyc
+volumes/etcd/member/snap/
+volumes/etcd/member/wal/

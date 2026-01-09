@@ -45,8 +45,16 @@ class WorkflowBuilder:
                 mapping = ParameterConvertor.get_mapping(source_type, target_type)
                 if mapping:
                     for field, template in mapping.items():
-                        # Only apply if configuration is missing or empty
-                        if not n_config.get(field):
+                        # Only apply if configuration is missing, empty, or looks like a default/copy error
+                        current_val = n_config.get(field)
+                        
+                        # Check if invalid: empty, or for prompt/query, if it matches system_prompt (copy paste error)
+                        is_invalid = not current_val
+                        if not is_invalid and field in ['prompt', 'query'] and n_config.get('system_prompt'):
+                            if current_val == n_config.get('system_prompt'):
+                                is_invalid = True
+                        
+                        if is_invalid:
                             # Determine alias for source node (e.g. start -> start_node)
                             alias_map = {
                                 'start': 'start_node',

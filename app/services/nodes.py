@@ -54,23 +54,30 @@ def resolve_variables(text: str, state: AgentState) -> str:
         
         # Check if node exists in outputs
         if node_id in node_outputs:
-            node_data = node_outputs[node_id]
+            current_data = node_outputs[node_id]
             
-            # If parts has only 1 element (e.g. {{start-node}}), return full object str?
-            # Or if it has key
+            # Navigate through parts
             if len(parts) > 1:
-                key = '.'.join(parts[1:])
-                if isinstance(node_data, dict):
-                    val = node_data.get(key, "")
-                    if isinstance(val, (dict, list)):
-                        import json
-                        return json.dumps(val, ensure_ascii=False)
-                    return str(val)
+                keys = parts[1:]
+                for key in keys:
+                    if isinstance(current_data, dict):
+                        current_data = current_data.get(key, "")
+                        if current_data == "": # Key not found or empty
+                             break
+                    else:
+                        current_data = ""
+                        break
+                
+                val = current_data
+                if isinstance(val, (dict, list)):
+                    import json
+                    return json.dumps(val, ensure_ascii=False)
+                return str(val)
             else:
-                if isinstance(node_data, (dict, list)):
+                if isinstance(current_data, (dict, list)):
                      import json
-                     return json.dumps(node_data, ensure_ascii=False)
-                return str(node_data)
+                     return json.dumps(current_data, ensure_ascii=False)
+                return str(current_data)
         
         return match.group(0)
 
