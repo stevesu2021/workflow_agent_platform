@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     MINIO_BUCKET: str = "agentflow-data"
     MINIO_SECURE: bool = False
     
+    # LLM Settings
+    OPENAI_API_KEY: str = ""
+    OPENAI_API_BASE: str = ""
+    
     class Config:
         env_file = ".env"
 

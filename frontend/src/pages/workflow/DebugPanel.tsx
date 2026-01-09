@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import type { Node } from 'reactflow';
-import { Input, Button, Upload, message as antdMessage, Typography, Card } from 'antd';
-import { UploadOutlined, SendOutlined, UserOutlined, RobotOutlined } from '@ant-design/icons';
+import { Input, Button, Upload, message as antdMessage, Typography, Card, Drawer, Timeline } from 'antd';
+import { UploadOutlined, SendOutlined, UserOutlined, RobotOutlined, BugOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import { useParams } from 'react-router-dom';
 
 interface DebugPanelProps {
   nodes: Node[];
+  onRunComplete?: (logs: TraceLog[]) => void;
 }
 
 interface Message {
@@ -14,36 +15,70 @@ interface Message {
   content: string;
 }
 
-export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes }) => {
+interface TraceLog {
+    node_id: string;
+    output: any;
+    timestamp: string;
+}
+
+export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) => {
   const { id } = useParams();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(false);
+  
+  // Drawer state
+  const [drawerVisible, setDrawerVisible] = useState(false);
+  const [traceLogs, setTraceLogs] = useState<TraceLog[]>([]);
 
   // Derive used resources from nodes
   // We use the label in data, or fall back to type
   const usedResources = Array.from(new Set(nodes.map(n => n.data.label || n.type)));
 
   const handleSend = async () => {
-    if (!inputValue.trim()) return;
+    if (!inputValue.trim() && !fileList.length) return;
 
     const userMsg: Message = { role: 'user', content: inputValue };
+    if (fileList.length > 0) {
+        userMsg.content += `\n[File Uploaded: ${fileList[0].name}]`;
+    }
+    
     setMessages(prev => [...prev, userMsg]);
     setInputValue('');
     setLoading(true);
 
     try {
-      // Assuming the agent ID is available in the URL
-      // If id is undefined (new workflow), we can't run it yet
       if (!id) {
         antdMessage.warning('Please save the workflow first before debugging.');
         setLoading(false);
         return;
       }
 
+      // Prepare inputs
+      const inputs: any = { input: inputValue };
+      
+      // If file, read content (simple text read for prototype)
+      if (fileList.length > 0) {
+          const file = fileList[0];
+          // Simple text reader
+          const text = await file.originFileObj?.text();
+          inputs.file_name = file.name;
+          inputs.file_content = text;
+      }
+
       const response = await axios.post(`/api/agents/${id}/run`, {
-        inputs: { input: userMsg.content }
+        inputs: inputs
       });
+      
+      setFileList([]); // Clear file after send
+      
+      // Update logs
+      if (response.data.trace_logs) {
+          setTraceLogs(response.data.trace_logs);
+          if (onRunComplete) {
+              onRunComplete(response.data.trace_logs);
+          }
+      }
       
       let outputContent = '';
       if (typeof response.data.output === 'string') {
@@ -64,6 +99,8 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes }) => {
       setLoading(false);
     }
   };
+  
+  const [fileList, setFileList] = useState<any[]>([]);
 
   return (
     <div style={{ display: 'flex', height: '100%' }}>
@@ -78,6 +115,13 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes }) => {
                 </Card>
             ))}
         </div>
+        <Button 
+            icon={<BugOutlined />} 
+            onClick={() => setDrawerVisible(true)} 
+            style={{ marginTop: '16px', width: '100%' }}
+        >
+            查看运行日志
+        </Button>
       </div>
 
       {/* Right: Chat */}
@@ -112,7 +156,12 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes }) => {
         </div>
         
         <div style={{ display: 'flex', gap: '8px' }}>
-            <Upload beforeUpload={() => false} maxCount={1}>
+            <Upload 
+                beforeUpload={() => false} 
+                maxCount={1}
+                fileList={fileList}
+                onChange={({ fileList }) => setFileList(fileList)}
+            >
                 <Button icon={<UploadOutlined />}>上传文件</Button>
             </Upload>
             <Input.TextArea 
@@ -132,6 +181,32 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes }) => {
             </Button>
         </div>
       </div>
+      
+      <Drawer
+        title="Engine Execution Trace"
+        placement="right"
+        width={400}
+        onClose={() => setDrawerVisible(false)}
+        open={drawerVisible}
+      >
+        {traceLogs.length === 0 ? (
+            <div style={{ color: '#999', textAlign: 'center' }}>暂无日志</div>
+        ) : (
+            <Timeline
+                items={traceLogs.map((log, index) => ({
+                    children: (
+                        <div>
+                            <div style={{ fontWeight: 'bold' }}>{log.node_id}</div>
+                            <div style={{ fontSize: '12px', color: '#999' }}>{log.timestamp}</div>
+                            <div style={{ marginTop: '4px', fontSize: '12px', whiteSpace: 'pre-wrap', backgroundColor: '#f5f5f5', padding: '8px', borderRadius: '4px' }}>
+                                {JSON.stringify(log.output, null, 2)}
+                            </div>
+                        </div>
+                    )
+                }))}
+            />
+        )}
+      </Drawer>
     </div>
   );
 };

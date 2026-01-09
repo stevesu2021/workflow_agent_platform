@@ -1,10 +1,13 @@
 import os
 from typing import List, Dict, Any, Optional, Tuple
 from langchain_openai import OpenAIEmbeddings
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings, FakeEmbeddings
 from langchain_community.vectorstores import Milvus
 from langchain_core.documents import Document as LangchainDocument
 from pymilvus import connections, utility
+import logging
+
+logger = logging.getLogger(__name__)
 
 class VectorService:
     def __init__(self):
@@ -20,14 +23,20 @@ class VectorService:
 
         # We need an embedding function. 
         # For this prototype, we'll try to use OpenAI if key exists, otherwise we use a local model.
-        api_key = os.getenv("OPENAI_API_KEY")
+        # Check settings or env
+        from app.core.config import settings
+        api_key = settings.OPENAI_API_KEY or os.getenv("OPENAI_API_KEY")
+        
         if api_key:
             print("Using OpenAI Embeddings")
             self.embedding_function = OpenAIEmbeddings(api_key=api_key)
         else:
-            print("WARNING: OPENAI_API_KEY not found. Using local HuggingFaceEmbeddings (sentence-transformers/all-MiniLM-L6-v2).")
-            # This requires sentence-transformers to be installed
-            self.embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+            print("WARNING: OPENAI_API_KEY not found. Using FakeEmbeddings for offline mode.")
+            # Use FakeEmbeddings to avoid downloading models in offline environment
+            self.embedding_function = FakeEmbeddings(size=384)
+            
+            # Legacy fallback code (disabled for offline environment)
+            # self.embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
     def get_collection(self, collection_name: str) -> Milvus:
         # Define index params for IP metric (Inner Product / Cosine Similarity)

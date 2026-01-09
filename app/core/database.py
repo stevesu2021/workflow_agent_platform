@@ -17,3 +17,7 @@ async def init_db():
 async def get_session() -> AsyncSession:
     async with async_session_maker() as session:
         yield session
+
+# Export session factory for direct usage in services
+def async_session_factory():
+    return async_session_maker()

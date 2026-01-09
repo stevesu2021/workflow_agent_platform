@@ -24,6 +24,13 @@ class AiResourceService:
     async def get_resource(self, resource_id: uuid.UUID) -> Optional[AiResource]:
         return await self.session.get(AiResource, resource_id)
 
+    async def get_resource_by_name(self, name: str, type_filter: Optional[str] = None) -> Optional[AiResource]:
+        query = select(AiResource).where(AiResource.name == name)
+        if type_filter:
+            query = query.where(AiResource.type == type_filter)
+        result = await self.session.execute(query)
+        return result.scalars().first()
+
     async def create_resource(self, resource_create: AiResourceCreate) -> AiResource:
         resource = AiResource.from_orm(resource_create)
         

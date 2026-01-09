@@ -236,12 +236,15 @@ const WorkflowStudioContent: React.FC = () => {
 
       // Default output params based on node type
       let defaultOutputParams: any[] = [];
+      let defaultSystemPrompt = undefined;
+
       switch (type) {
           case 'llm':
               defaultOutputParams = [
                   { name: 'text', type: 'string', desc: '模型生成的文本内容' },
                   { name: 'usage', type: 'object', desc: 'Token使用情况' }
               ];
+              defaultSystemPrompt = "你是电网专家，熟悉电力系统、输配电、智能电网、继电保护、调度自动化、新能源并网等相关领域，能够提供专业、准确、安全的技术支持与解答。";
               break;
           case 'knowledge':
               defaultOutputParams = [
@@ -275,7 +278,8 @@ const WorkflowStudioContent: React.FC = () => {
         data: { 
             label: `${label}`, 
             originalType: type,
-            output_params: defaultOutputParams 
+            output_params: defaultOutputParams,
+            system_prompt: defaultSystemPrompt 
         }, 
       };
 
@@ -291,6 +295,29 @@ const WorkflowStudioContent: React.FC = () => {
   const onPaneClick = useCallback(() => {
       setSelectedNode(null);
   }, []);
+
+  // Debug Trace Logs
+  const [lastTraceLogs, setLastTraceLogs] = useState<any[]>([]);
+
+  const handleDebugRunComplete = (logs: any[]) => {
+      setLastTraceLogs(logs);
+      // Update nodes data with latest trace info
+      setNodes((nds) => 
+        nds.map(node => {
+            const nodeLog = logs.find(l => l.node_id === node.id);
+            if (nodeLog) {
+                return {
+                    ...node,
+                    data: {
+                        ...node.data,
+                        _debugData: nodeLog
+                    }
+                };
+            }
+            return node;
+        })
+      );
+  };
 
   const onNodeUpdate = useCallback((id: string, data: any) => {
       setNodes((nds) =>
@@ -375,7 +402,7 @@ const WorkflowStudioContent: React.FC = () => {
                     onUpdate={onNodeUpdate}
                 />
             </div>
-            {activeKey === 'debug' && <DebugPanel nodes={nodes} />}
+            {activeKey === 'debug' && <DebugPanel nodes={nodes} onRunComplete={handleDebugRunComplete} />}
         </div>
       </div>
       <Modal

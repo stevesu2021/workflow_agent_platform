@@ -8,14 +8,20 @@ from langchain_core.messages import HumanMessage
 import uuid
 from typing import Dict, Any
 
+from pydantic import BaseModel
+
+class AgentRunRequest(BaseModel):
+    inputs: Dict[str, Any]
+
 router = APIRouter()
 
 @router.post("/{agent_id}/run")
 async def run_agent(
     agent_id: uuid.UUID, 
-    inputs: Dict[str, Any],
+    request: AgentRunRequest,
     session: AsyncSession = Depends(get_session)
 ):
+    inputs = request.inputs
     service = AgentService(session)
     
     # 1. Get Agent Version
@@ -37,15 +43,41 @@ async def run_agent(
     # 4. Execute
     # Convert input string to message if needed
     user_input = inputs.get("input", "")
+    
+    # Generate IDs if not present
+    if "request_id" not in inputs:
+        inputs["request_id"] = str(uuid.uuid4())
+    if "conversion_id" not in inputs:
+        inputs["conversion_id"] = str(uuid.uuid4())
+        
+    # Initialize node_outputs with start node inputs if possible, 
+    # but strictly start_node function logic handles input mapping.
+    # We pass inputs via 'context' so start_node can pick them up.
+    
     initial_state = {
         "messages": [HumanMessage(content=user_input)],
-        "context": inputs
+        "context": inputs,
+        "node_outputs": {},
+        "trace_logs": []
     }
     
     try:
         result = await app.ainvoke(initial_state)
-        # Extract last message
-        last_message = result["messages"][-1].content
-        return {"status": "success", "output": last_message, "full_state": str(result)}
+        # Extract last message or some result
+        # The result state contains messages log.
+        # We can also check node_outputs of the 'end' node or just return the chat response.
+        
+        last_message = ""
+        if result["messages"]:
+            last_message = result["messages"][-1].content
+            
+        return {
+            "status": "success", 
+            "output": last_message, 
+            "full_state": str(result),
+            "trace_logs": result.get("trace_logs", [])
+        }
     except Exception as e:
+         import traceback
+         traceback.print_exc()
          raise HTTPException(status_code=500, detail=f"Execution failed: {str(e)}")
