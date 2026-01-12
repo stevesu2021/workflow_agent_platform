@@ -9,6 +9,51 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def kb_id_to_collection_name(kb_id: str) -> str:
+    """
+    Convert knowledge base ID to a valid Milvus collection name.
+
+    Milvus collection naming rules:
+    - Must start with an underscore or letter
+    - Can only contain letters, numbers, and underscores
+    - Max length is 255 characters
+
+    Args:
+        kb_id: Knowledge base ID (typically a UUID with hyphens)
+
+    Returns:
+        Valid Milvus collection name (kb_{sanitized_uuid})
+    """
+    # Remove hyphens and add 'kb_' prefix to ensure it starts with a letter
+    cleaned = kb_id.replace("-", "_")
+    return f"kb_{cleaned}"
+
+def get_collection_name_for_kb(kb_id: str) -> str:
+    """
+    Get the actual collection name for a knowledge base.
+    This function tries both the new format (kb_sanitized) and old format (raw UUID).
+
+    Args:
+        kb_id: Knowledge base ID
+
+    Returns:
+        The actual collection name that exists in Milvus
+    """
+    from pymilvus import utility
+
+    # Try new format first
+    new_name = kb_id_to_collection_name(kb_id)
+    if utility.has_collection(new_name):
+        return new_name
+
+    # Try old format (raw UUID with hyphens replaced)
+    old_name = kb_id.replace("-", "_")
+    if utility.has_collection(old_name):
+        return old_name
+
+    # Return new format for new collections
+    return new_name
+
 class VectorService:
     def __init__(self):
         self.milvus_host = os.getenv("MILVUS_HOST", "127.0.0.1")

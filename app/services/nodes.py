@@ -22,40 +22,94 @@ from datetime import datetime
 # Since we are inside an async function, we can create a session.
 from app.core.database import async_session_factory
 
-async def get_llm_config(model_name: str):
+async def get_llm_config(model_identifier: str):
+    """
+    Get LLM configuration by resource ID or name.
+
+    Args:
+        model_identifier: Resource ID (UUID) or resource name
+
+    Returns:
+        Dict with api_key, base_url, and model name, or None if not found
+    """
+    import uuid
+
     async with async_session_factory() as session:
         service = AiResourceService(session)
-        # Try to find resource with this name
-        resource = await service.get_resource_by_name(model_name, type_filter="text_llm")
+
+        resource = None
+
+        # First, try to parse as UUID and search by ID
+        try:
+            resource_id = uuid.UUID(model_identifier)
+            resource = await service.get_resource(resource_id)
+            if resource and resource.type != "text_llm":
+                resource = None
+        except (ValueError, AttributeError):
+            # Not a valid UUID, continue to name search
+            pass
+
+        # Fallback: search by name if not found by ID
+        if not resource:
+            resource = await service.get_resource_by_name(model_identifier, type_filter="text_llm")
+
         if resource:
+            # Extract model name from resource config
+            # The config field is a JSON dict that may contain a "model" key
+            actual_model = resource.config.get("model") if resource.config else None
+            if not actual_model:
+                # Fallback to resource name if model not in config
+                actual_model = resource.name
+
             return {
                 "api_key": resource.api_key,
                 "base_url": resource.endpoint,
-                "model": model_name # Or resource specific model name if stored in config
+                "model": actual_model,
+                "resource_name": resource.name
             }
+
         return None
+
+# Helper to format knowledge chunks into readable text
+def format_knowledge_chunks(chunks: list) -> str:
+    """Format knowledge chunks into a readable text string for LLM context."""
+    if not chunks:
+        return "No relevant information found."
+
+    formatted_lines = []
+    for i, chunk in enumerate(chunks, 1):
+        content = chunk.get("content", "")
+        score = chunk.get("score", 0)
+        metadata = chunk.get("metadata", {})
+
+        # Format each chunk with its content and relevance score
+        chunk_text = f"[Source {i}] (Relevance: {score:.2f})\n{content}"
+        formatted_lines.append(chunk_text)
+
+    return "\n\n".join(formatted_lines)
+
 
 # Helper to resolve variables like {{node_id.key}}
 def resolve_variables(text: str, state: AgentState) -> str:
     if not text or not isinstance(text, str):
         return text
-    
+
     node_outputs = state.get("node_outputs", {})
-    
+
     def replace_match(match):
         # match group 1 is the content inside {{ }}
         var_path = match.group(1).strip()
         parts = var_path.split('.')
-        
+
         # Handle {{start-node.input}} specifically if user input is stored directly
         # or handle general structure
-        
+
         node_id = parts[0]
-        
+
         # Check if node exists in outputs
         if node_id in node_outputs:
             current_data = node_outputs[node_id]
-            
+
             # Navigate through parts
             if len(parts) > 1:
                 keys = parts[1:]
@@ -67,18 +121,33 @@ def resolve_variables(text: str, state: AgentState) -> str:
                     else:
                         current_data = ""
                         break
-                
+
                 val = current_data
-                if isinstance(val, (dict, list)):
+                # Special handling for knowledge chunks
+                if isinstance(val, list):
+                    # Check if this is a knowledge chunks list
+                    if val and isinstance(val[0], dict) and "content" in val[0]:
+                        return format_knowledge_chunks(val)
+                    else:
+                        import json
+                        return json.dumps(val, ensure_ascii=False)
+                if isinstance(val, dict):
                     import json
                     return json.dumps(val, ensure_ascii=False)
                 return str(val)
             else:
-                if isinstance(current_data, (dict, list)):
+                if isinstance(current_data, list):
+                    # Check if this is a knowledge chunks list
+                    if current_data and isinstance(current_data[0], dict) and "content" in current_data[0]:
+                        return format_knowledge_chunks(current_data)
+                    else:
+                        import json
+                        return json.dumps(current_data, ensure_ascii=False)
+                if isinstance(current_data, dict):
                      import json
                      return json.dumps(current_data, ensure_ascii=False)
                 return str(current_data)
-        
+
         return match.group(0)
 
     return re.sub(r'\{\{(.*?)\}\}', replace_match, text)
@@ -157,15 +226,17 @@ async def llm_node(state: AgentState, config: Dict[str, Any], node_id: str):
     
     # Try to get resource config from DB
     resource_config = await get_llm_config(model_name)
-    
+
     api_key = None
     base_url = None
-    
+    actual_model_name = model_name  # Default to the original model_name
+
     if resource_config:
         print(f"Using AI Resource: {model_name}")
         api_key = resource_config.get("api_key")
         base_url = resource_config.get("base_url")
-        
+        actual_model_name = resource_config.get("model")  # Use the actual model from config
+
         # Sanitize base_url for ChatOpenAI which appends /chat/completions automatically
         if base_url and base_url.endswith("/chat/completions"):
             base_url = base_url.replace("/chat/completions", "")
@@ -188,7 +259,7 @@ async def llm_node(state: AgentState, config: Dict[str, Any], node_id: str):
         try:
             # Note: ChatOpenAI uses openai_api_key and openai_api_base params
             llm = ChatOpenAI(
-                model=model_name,
+                model=actual_model_name,  # Use the actual model name from resource config
                 openai_api_key=api_key,
                 openai_api_base=base_url,
                 temperature=temperature
@@ -275,24 +346,27 @@ async def tool_node(state: AgentState, config: Dict[str, Any], node_id: str):
 
 async def knowledge_node(state: AgentState, config: Dict[str, Any], node_id: str):
     print(f"Executing Knowledge Node {node_id}: {config}")
-    
-    query = resolve_variables(config.get('query', ''), state)
-    # Default to start node rawQuery if not specified? 
-    # Better to rely on explicit config.
-    
+
+    # Use 'content' parameter for input query text
+    # Fallback to 'query' for backward compatibility
+    content = resolve_variables(config.get('content', '') or config.get('query', ''), state)
+
     kb_id = config.get('knowledge_id')
     if kb_id:
+        # Get the actual collection name (supports both new and old formats)
+        from app.services.vector_service import get_collection_name_for_kb
+        collection_name = get_collection_name_for_kb(kb_id)
+        print(f"Searching in collection: {collection_name} (kb_id: {kb_id}), query: {content}")
+
         # Search in vector store
-        # We use the kb_id as collection name (or map it)
-        # Assuming kb_id is the collection name for simplicity
-        results = await vector_service.search(kb_id, query)
+        results = await vector_service.search(collection_name, content)
         chunks = [
-            {"content": doc.page_content, "score": score, "metadata": doc.metadata} 
+            {"content": doc.page_content, "score": score, "metadata": doc.metadata}
             for doc, score in results
         ]
     else:
         chunks = []
-        
+
     output = {"chunks": chunks}
     return update_node_output(state, node_id, output)
 

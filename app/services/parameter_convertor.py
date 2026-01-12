@@ -13,7 +13,7 @@ class ParameterConvertor:
             "prompt": "{{start_node.rawQuery}}"
         },
         ("start", "knowledge"): {
-            "query": "{{start_node.rawQuery}}"
+            "content": "{{start_node.rawQuery}}"
         },
         ("start", "intent_recognition"): {
             "query": "{{start_node.rawQuery}}"
@@ -30,7 +30,7 @@ class ParameterConvertor:
 
         # Knowledge Base Connections
         ("knowledge", "llm"): {
-            "prompt": "Context:\n{{knowledge_node.chunks}}\n\nUser Question: {{start_node.rawQuery}}\n\nPlease answer the question based on the context above."
+            "prompt": "Context:{{knowledge_node.chunks}} \n User Query:{{start_node.rawQuery}}"
         },
 
         # LLM Connections
