@@ -1,6 +1,6 @@
 import type { Agent, AgentCreate } from '../types/agent';
 
-const BASE_URL = '/api/agents';
+const BASE_URL = 'http://localhost:8001/agents';
 
 export const agentsApi = {
   // 获取所有智能体

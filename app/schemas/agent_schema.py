@@ -44,18 +44,16 @@ class AgentCreate(BaseModel):
     name: str
     description: Optional[str] = None
     icon: Optional[str] = None
-    flow_json: AgentGraph
-
-class AgentUpdate(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    icon: Optional[str] = None
-    flow_json: Optional[AgentGraph] = None
+    type: Optional[str] = 'workflow'
+    flow_json: Dict[str, Any] # Changed from AgentGraph to Dict to support both workflow and agentic structures
+    config: Optional[Dict[str, Any]] = None
 
 class AgentResponse(BaseModel):
     id: uuid.UUID
     name: str
     description: Optional[str] = None
+    type: Optional[str] = 'workflow'
     created_at: Any
     updated_at: Any
     latest_version: Optional[int] = None
+    versions: Optional[List[Any]] = None

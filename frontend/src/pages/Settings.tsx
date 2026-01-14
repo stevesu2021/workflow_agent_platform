@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Layout,
   Tabs,
@@ -159,62 +159,62 @@ const Settings: React.FC = () => {
     ? resources 
     : resources.filter(r => r.type === activeTab);
 
-  const columns = [
+  const columns = useMemo(() => [
     {
-      title: 'Name',
+      title: '名称',
       dataIndex: 'name',
       key: 'name',
       render: (text: string, record: AiResource) => (
         <Space>
           <span style={{ fontWeight: 500 }}>{text}</span>
-          {record.is_default && <Tag color="blue">Default</Tag>}
+          {record.is_default && <Tag color="blue">默认</Tag>}
         </Space>
       ),
     },
     {
-      title: 'Type',
+      title: '类型',
       dataIndex: 'type',
       key: 'type',
       render: (type: string) => <Tag>{AiResourceTypeLabels[type] || type}</Tag>,
     },
     {
-      title: 'Endpoint',
+      title: '端点',
       dataIndex: 'endpoint',
       key: 'endpoint',
       ellipsis: true,
     },
     {
-      title: 'Status',
+      title: '状态',
       key: 'status',
       render: (_: any, record: AiResource) => (
         <Space>
            <Tag color={record.is_enabled ? 'green' : 'default'}>
-             {record.is_enabled ? 'Enabled' : 'Disabled'}
+             {record.is_enabled ? '已启用' : '已禁用'}
            </Tag>
-           {record.health_status === 'healthy' && <Tooltip title="Healthy"><CheckCircleOutlined style={{ color: '#52c41a' }} /></Tooltip>}
-           {record.health_status === 'unhealthy' && <Tooltip title="Unhealthy"><CloseCircleOutlined style={{ color: '#ff4d4f' }} /></Tooltip>}
+           {record.health_status === 'healthy' && <Tooltip title="健康"><CheckCircleOutlined style={{ color: '#52c41a' }} /></Tooltip>}
+           {record.health_status === 'unhealthy' && <Tooltip title="不健康"><CloseCircleOutlined style={{ color: '#ff4d4f' }} /></Tooltip>}
         </Space>
       ),
     },
     {
-      title: 'Action',
+      title: '操作',
       key: 'action',
       render: (_: any, record: AiResource) => (
         <Space size="small">
-          <Tooltip title="Test Case">
+          <Tooltip title="测试用例">
             <Button 
               icon={<PlayCircleOutlined />} 
               onClick={() => handleTestCase(record)} 
             />
           </Tooltip>
-          <Tooltip title="Test Connection">
+          <Tooltip title="测试连接">
             <Button 
               icon={<ApiOutlined />} 
               onClick={() => handleTestConnection(record)} 
               loading={testingId === record.id}
             />
           </Tooltip>
-          <Tooltip title="Set as Default">
+          <Tooltip title="设为默认">
              <Button 
                icon={<CheckCircleOutlined />} 
                disabled={record.is_default || !record.is_enabled}
@@ -222,16 +222,16 @@ const Settings: React.FC = () => {
              />
           </Tooltip>
           <Button icon={<EditOutlined />} onClick={() => handleEdit(record)} />
-          <Popconfirm title="Are you sure?" onConfirm={() => handleDelete(record.id)}>
+          <Popconfirm title="确定要删除吗？" onConfirm={() => handleDelete(record.id)}>
             <Button icon={<DeleteOutlined />} danger />
           </Popconfirm>
         </Space>
       ),
     },
-  ];
+  ], [testingId]);
 
   const tabItems = [
-    { key: 'all', label: 'All Resources' },
+    { key: 'all', label: '所有资源' },
     ...Object.entries(AiResourceTypeLabels).map(([key, label]) => ({
       key,
       label,
@@ -243,11 +243,11 @@ const Settings: React.FC = () => {
       <Content>
         <div style={{ marginBottom: 24, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
-            <h2 style={{ margin: 0 }}><SettingOutlined /> System Settings</h2>
-            <span style={{ color: '#888' }}>Manage your AI models and system configurations</span>
+            <h2 style={{ margin: 0 }}><SettingOutlined /> 系统资源</h2>
+            <span style={{ color: '#888' }}>管理您的 AI 模型和系统配置</span>
           </div>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-            Add Resource
+            添加资源
           </Button>
         </div>
 
@@ -265,7 +265,7 @@ const Settings: React.FC = () => {
         />
 
         <Modal
-          title={editingResource ? "Edit Resource" : "Add Resource"}
+          title={editingResource ? "编辑资源" : "添加资源"}
           open={isModalVisible}
           onOk={handleModalOk}
           onCancel={() => setIsModalVisible(false)}
@@ -278,16 +278,16 @@ const Settings: React.FC = () => {
           >
             <Form.Item
               name="name"
-              label="Name"
-              rules={[{ required: true, message: 'Please enter a name' }]}
+              label="名称"
+              rules={[{ required: true, message: '请输入名称' }]}
             >
-              <Input placeholder="e.g. Qwen-Max" />
+              <Input placeholder="例如：Qwen-Max" />
             </Form.Item>
 
             <Form.Item
               name="type"
-              label="Type"
-              rules={[{ required: true, message: 'Please select a type' }]}
+              label="类型"
+              rules={[{ required: true, message: '请选择类型' }]}
             >
               <Select disabled={!!editingResource}>
                 {Object.entries(AiResourceTypeLabels).map(([key, label]) => (
@@ -298,8 +298,8 @@ const Settings: React.FC = () => {
 
             <Form.Item
               name="endpoint"
-              label="Endpoint URL"
-              rules={[{ required: true, message: 'Please enter the endpoint URL' }]}
+              label="端点 URL"
+              rules={[{ required: true, message: '请输入端点 URL' }]}
             >
               <Input placeholder="https://api.example.com/v1" />
             </Form.Item>
@@ -307,23 +307,23 @@ const Settings: React.FC = () => {
             <Form.Item
               name="api_key"
               label="API Key"
-              extra="Leave blank to keep unchanged (when editing)"
+              extra="留空以保持不变（编辑时）"
             >
               <Input.Password placeholder="sk-..." />
             </Form.Item>
 
             <Form.Item
               name="description"
-              label="Description"
+              label="描述"
             >
               <Input.TextArea rows={2} />
             </Form.Item>
 
             <Space>
-              <Form.Item name="is_enabled" valuePropName="checked" label="Enabled">
+              <Form.Item name="is_enabled" valuePropName="checked" label="启用">
                 <Switch />
               </Form.Item>
-              <Form.Item name="is_default" valuePropName="checked" label="Default for this type">
+              <Form.Item name="is_default" valuePropName="checked" label="设为该类型默认">
                 <Switch />
               </Form.Item>
             </Space>

@@ -19,11 +19,16 @@ async def generate_agent(request: GenerateRequest):
 @router.post("/", response_model=AgentResponse)
 async def create_agent(agent: AgentCreate, session: AsyncSession = Depends(get_session)):
     service = AgentService(session)
+    # Ensure flow_json is a dict if it's coming as Pydantic model
+    if hasattr(agent.flow_json, 'model_dump'):
+        agent.flow_json = agent.flow_json.model_dump()
+        
     new_agent = await service.create_agent(agent)
     return AgentResponse(
         id=new_agent.id,
         name=new_agent.name,
         description=new_agent.description,
+        type=new_agent.type,
         created_at=new_agent.created_at,
         updated_at=new_agent.updated_at,
         latest_version=1
@@ -38,6 +43,7 @@ async def list_agents(session: AsyncSession = Depends(get_session)):
             id=a.id,
             name=a.name,
             description=a.description,
+            type=a.type,
             created_at=a.created_at,
             updated_at=a.updated_at
         ) for a in agents
@@ -53,8 +59,10 @@ async def get_agent(agent_id: uuid.UUID, session: AsyncSession = Depends(get_ses
         id=agent.id,
         name=agent.name,
         description=agent.description,
+        type=agent.type,
         created_at=agent.created_at,
-        updated_at=agent.updated_at
+        updated_at=agent.updated_at,
+        versions=agent.versions
     )
 
 @router.get("/{agent_id}/flow", response_model=dict)

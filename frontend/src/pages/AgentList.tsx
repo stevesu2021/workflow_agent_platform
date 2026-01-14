@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Table, Button, Space, Tag, message } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
-import { PlusOutlined, EditOutlined, DeleteOutlined, ExportOutlined } from '@ant-design/icons';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Table, Button, Space, Tag, message, Dropdown } from 'antd';
+import type { ColumnsType, MenuProps } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, ExportOutlined, DownOutlined, RobotOutlined, NodeIndexOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { agentsApi } from '../api/agents';
 import type { Agent } from '../types/agent';
@@ -61,53 +61,88 @@ const AgentList: React.FC = () => {
       }
   };
 
-  const columns: ColumnsType<Agent> = [
+  const handleEdit = (record: Agent) => {
+    if (record.type === 'agentic') {
+      navigate(`/agentic/${record.id}`);
+    } else {
+      navigate(`/workflow/${record.id}`);
+    }
+  };
+
+  const columns = useMemo<ColumnsType<Agent>>(() => [
     {
-      title: 'Name',
+      title: '名称',
       dataIndex: 'name',
       key: 'name',
       render: (text) => <a>{text}</a>,
     },
     {
-      title: 'Description',
-      dataIndex: 'description',
-      key: 'description',
-    },
-    {
-      title: 'Status',
-      key: 'status',
-      render: () => (
-        <Tag color="green">
-          ACTIVE
+      title: '类型',
+      dataIndex: 'type',
+      key: 'type',
+      render: (type) => (
+        <Tag icon={type === 'agentic' ? <RobotOutlined /> : <NodeIndexOutlined />} color={type === 'agentic' ? 'purple' : 'blue'}>
+          {type === 'agentic' ? 'Agentic' : 'Workflow'}
         </Tag>
       ),
     },
     {
-      title: 'Last Updated',
+      title: '描述',
+      dataIndex: 'description',
+      key: 'description',
+    },
+    {
+      title: '状态',
+      key: 'status',
+      render: () => (
+        <Tag color="green">
+          活跃
+        </Tag>
+      ),
+    },
+    {
+      title: '最后更新',
       dataIndex: 'updated_at',
       key: 'updated_at',
       render: (text) => text ? new Date(text).toLocaleString() : '-',
     },
     {
-      title: 'Action',
+      title: '操作',
       key: 'action',
       render: (_, record) => (
         <Space size="middle">
-          <Button icon={<EditOutlined />} onClick={() => navigate(`/workflow/${record.id}`)}>Edit</Button>
-          <Button icon={<ExportOutlined />} onClick={() => handleExport(record.id)}>Export</Button>
-          <Button icon={<DeleteOutlined />} danger onClick={() => handleDelete(record.id)}>Delete</Button>
+          <Button icon={<EditOutlined />} onClick={() => handleEdit(record)}>编辑</Button>
+          <Button icon={<ExportOutlined />} onClick={() => handleExport(record.id)}>导出</Button>
+          <Button icon={<DeleteOutlined />} danger onClick={() => handleDelete(record.id)}>删除</Button>
         </Space>
       ),
+    },
+  ], [navigate]);
+
+  const createMenuItems: MenuProps['items'] = [
+    {
+      key: 'workflow',
+      label: '工作流编排智能体',
+      icon: <NodeIndexOutlined />,
+      onClick: () => navigate('/workflow'),
+    },
+    {
+      key: 'agentic',
+      label: 'Agentic 智能体',
+      icon: <RobotOutlined />,
+      onClick: () => navigate('/agentic'),
     },
   ];
 
   return (
     <div>
       <div style={{ marginBottom: 16, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2>My Agents</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/workflow')}>
-          Create New Agent
-        </Button>
+        <h2>智能体管理</h2>
+        <Dropdown menu={{ items: createMenuItems }} trigger={['click']}>
+          <Button type="primary" icon={<PlusOutlined />}>
+            创建智能体 <DownOutlined />
+          </Button>
+        </Dropdown>
       </div>
       <Table columns={columns} dataSource={data} rowKey="id" loading={loading} />
     </div>

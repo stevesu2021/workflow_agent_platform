@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { Button, Table, Modal, Form, Input, message, Space, Tag, Typography, Tooltip } from 'antd';
 import { PlusOutlined, BookOutlined, CloudUploadOutlined, CloudDownloadOutlined, GlobalOutlined, RocketOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -90,78 +90,78 @@ const KnowledgeBaseList: React.FC = () => {
     setUsageModalVisible(true);
   };
 
-  const columns = [
+  const columns = useMemo(() => [
     {
-      title: 'Name',
+      title: '名称',
       dataIndex: 'name',
       key: 'name',
       render: (text: string) => <><BookOutlined /> {text}</>,
     },
     {
-      title: 'Description',
+      title: '描述',
       dataIndex: 'description',
       key: 'description',
     },
     {
-      title: 'Status',
+      title: '状态',
       key: 'status',
       render: (_: any, record: KnowledgeBase) => (
         record.is_published ? (
-          <Tag color="success" icon={<GlobalOutlined />}>Published</Tag>
+          <Tag color="success" icon={<GlobalOutlined />}>已发布</Tag>
         ) : (
-          <Tag color="default">Unpublished</Tag>
+          <Tag color="default">未发布</Tag>
         )
       ),
     },
     {
-      title: 'Documents',
+      title: '文档数',
       dataIndex: 'document_count',
       key: 'document_count',
     },
     {
-      title: 'Created At',
+      title: '创建时间',
       dataIndex: 'created_at',
       key: 'created_at',
       render: (date: string) => new Date(date).toLocaleString(),
     },
     {
-      title: 'API Endpoint',
+      title: 'API 端点',
       key: 'api',
       render: (_: any, record: KnowledgeBase) => (
         record.is_published ? (
           <Paragraph copyable={{ text: `${window.location.origin}/api/knowledge-bases/${record.id}/search` }} style={{ marginBottom: 0 }}>
-             <Tooltip title="Copy API Endpoint">
+             <Tooltip title="复制 API 端点">
                <Tag color="blue">POST /api/knowledge-bases/{record.id}/search</Tag>
              </Tooltip>
           </Paragraph>
-        ) : <span style={{ color: '#ccc' }}>Not Available</span>
+        ) : <span style={{ color: '#ccc' }}>不可用</span>
       ),
     },
     {
-      title: 'Action',
+      title: '操作',
       key: 'action',
       render: (_: any, record: KnowledgeBase) => (
         <Space size="middle">
           {record.is_published ? (
             <>
-              <Button type="link" onClick={(e) => handleShowUsage(record, e)} icon={<RocketOutlined />}>Usage</Button>
-              <Button type="link" onClick={(e) => handleUnpublish(record.id, e)} icon={<CloudDownloadOutlined />}>Unpublish</Button>
+              <Button type="link" onClick={(e) => handleShowUsage(record, e)} icon={<RocketOutlined />}>使用</Button>
+              <Button type="link" onClick={(e) => handleUnpublish(record.id, e)} icon={<CloudDownloadOutlined />}>取消发布</Button>
             </>
           ) : (
-            <Button type="link" onClick={(e) => handlePublish(record.id, e)} icon={<CloudUploadOutlined />}>Publish</Button>
+            <Button type="link" onClick={(e) => handlePublish(record.id, e)} icon={<CloudUploadOutlined />}>发布</Button>
           )}
-          <Button type="link" danger onClick={(e) => handleDelete(record.id, e)}>Delete</Button>
+          <Button type="link" danger onClick={(e) => handleDelete(record.id, e)}>删除</Button>
         </Space>
       ),
     },
-  ];
+  ], []);
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-        <h2>Knowledge Bases</h2>
+        <h2>知识库管理</h2>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setIsModalOpen(true)}>
-          Create Knowledge Base
+          创建知识库
         </Button>
       </div>
 
@@ -179,16 +179,16 @@ const KnowledgeBaseList: React.FC = () => {
       />
 
       <Modal
-        title="Create Knowledge Base"
+        title="创建知识库"
         open={isModalOpen}
         onOk={() => form.submit()}
         onCancel={() => setIsModalOpen(false)}
       >
         <Form form={form} onFinish={handleCreate} layout="vertical">
-          <Form.Item name="name" label="Name" rules={[{ required: true }]}>
+          <Form.Item name="name" label="名称" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="description" label="Description">
+          <Form.Item name="description" label="描述">
             <Input.TextArea />
           </Form.Item>
         </Form>

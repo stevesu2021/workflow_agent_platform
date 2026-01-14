@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from app.models.agent import Agent, AgentVersion
-from app.schemas.agent_schema import AgentCreate, AgentUpdate
+from app.schemas.agent_schema import AgentCreate
 from typing import Optional
 import uuid
 

@@ -9,6 +9,7 @@ class AgentBase(SQLModel):
     name: str = Field(index=True)
     description: Optional[str] = None
     icon: Optional[str] = None
+    type: str = Field(default="workflow", index=True)  # 'workflow' or 'agentic'
 
 class Agent(AgentBase, table=True):
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)

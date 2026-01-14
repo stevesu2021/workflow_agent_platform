@@ -10,6 +10,8 @@ import {
   NodeIndexOutlined,
   SettingOutlined,
   BookOutlined,
+  ToolOutlined,
+  ClusterOutlined,
 } from '@ant-design/icons';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 
@@ -33,10 +35,13 @@ function getItem(
 
 const items: MenuItem[] = [
   getItem('概览', '/', <PieChartOutlined />),
-  getItem('智能体管理', '/agents', <RobotOutlined />),
-  getItem('工作流编排', '/workflow', <NodeIndexOutlined />),
+  getItem('智能体', '/agents', <RobotOutlined />),
+  // getItem('Agentic智能体', '/agentic', <TeamOutlined />), // 已整合进智能体管理
+  // getItem('工作流编排', '/workflow', <NodeIndexOutlined />), // 已整合进智能体管理
   getItem('知识库', '/knowledge', <BookOutlined />),
-  getItem('系统设置', '/settings', <SettingOutlined />),
+  getItem('MCP管理', '/mcp', <ClusterOutlined />),
+  getItem('工具管理', '/tools', <ToolOutlined />),
+  getItem('系统资源', '/settings', <SettingOutlined />),
 ];
 
 const MainLayout: React.FC = () => {
