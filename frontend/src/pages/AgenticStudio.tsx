@@ -11,8 +11,10 @@ import {
 import { agentsApi } from '../api/agents';
 import { getTools } from '../api/tools';
 import { aiResourcesApi } from '../api/aiResources';
+import { knowledgeApi } from '../api/knowledge';
 import type { Agent, AgentCreate, AgenticConfig } from '../types/agent';
 import type { Tool } from '../types/tool';
+import type { KnowledgeBase } from '../types/knowledge';
 
 const { Title, Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -27,6 +29,7 @@ const AgenticStudio: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [agent, setAgent] = useState<Agent | null>(null);
   const [availableTools, setAvailableTools] = useState<Tool[]>([]);
+  const [availableKnowledgeBases, setAvailableKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [aiModels, setAiModels] = useState<any[]>([]);
 
   // State for tags (Vocabulary)
@@ -43,11 +46,13 @@ const AgenticStudio: React.FC = () => {
 
   const fetchResources = async () => {
     try {
-      const [toolsData, resourcesData] = await Promise.all([
+      const [toolsData, resourcesData, kbData] = await Promise.all([
         getTools(),
-        aiResourcesApi.getAll()
+        aiResourcesApi.getAll(),
+        knowledgeApi.list()
       ]);
       setAvailableTools(toolsData);
+      setAvailableKnowledgeBases(kbData);
       setAiModels(resourcesData.filter((r: any) => r.type === 'text_llm'));
     } catch (error) {
       message.error('Failed to load resources');
@@ -90,6 +95,8 @@ const AgenticStudio: React.FC = () => {
         model_summary: values.model_summary,
         max_thoughts: values.max_thoughts,
         tools: values.tools || [],
+        knowledge_bases: values.knowledge_bases || [],
+        task_description: values.task_description || '',
         vocabulary: vocabulary,
         memory_config: {
           variables: {}, // TODO: Add UI for variables
@@ -211,9 +218,26 @@ const AgenticStudio: React.FC = () => {
 
               <Card title="Capabilities & Knowledge" style={{ marginBottom: 24 }}>
                 <Form.Item name="tools" label="Tools">
-                  <Select mode="multiple" placeholder="Select tools">
+                  <Select mode="multiple" placeholder="Select tools" optionFilterProp="children">
                     {availableTools.map(t => <Option key={t.id} value={t.name}>{t.name}</Option>)}
                   </Select>
+                </Form.Item>
+
+                <Form.Item name="knowledge_bases" label="Knowledge Bases">
+                  <Select mode="multiple" placeholder="Select knowledge bases" optionFilterProp="children">
+                    {availableKnowledgeBases.map(kb => (
+                      <Option key={kb.id} value={kb.id}>
+                        {kb.name} {kb.description && `(${kb.description})`}
+                      </Option>
+                    ))}
+                  </Select>
+                </Form.Item>
+
+                <Form.Item name="task_description" label="Task Description">
+                  <TextArea
+                    rows={6}
+                    placeholder="Describe the agent's task in detail. What should this agent accomplish? What are the specific objectives and constraints?"
+                  />
                 </Form.Item>
 
                 <Form.Item label="Professional Vocabulary">

@@ -33,6 +33,8 @@ export interface AgenticConfig {
   model_summary: string;
   max_thoughts: number;
   tools: string[];
+  knowledge_bases?: string[];
+  task_description?: string;
   vocabulary: string[];
   memory_config: {
     variables: Record<string, string>;
