@@ -1,0 +1,1 @@
+cd /home/steve/workspace/excel-knowledge-base && /home/steve/anaconda3/envs/excel_knowledegbase/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000

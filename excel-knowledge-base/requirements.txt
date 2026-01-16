@@ -1,0 +1,21 @@
+# Core dependencies
+pandas>=1.5.0
+python-dotenv>=0.19.0
+
+# AI/ML dependencies
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.20.0
+accelerate>=0.12.0
+
+# Web framework dependencies
+fastapi>=0.95.0
+uvicorn[standard]>=0.22.0
+pydantic>=2.0.0
+
+# Vector search dependencies (if using more advanced vector DB)
+# Uncomment if you want to use more advanced vector databases
+# faiss-cpu>=1.7.0
+# chromadb>=0.3.20
+
+openpyxl>=3.0.10

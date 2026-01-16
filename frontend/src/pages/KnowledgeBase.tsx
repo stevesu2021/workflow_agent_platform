@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { Button, Table, Modal, Form, Input, message, Space, Tag, Typography, Tooltip } from 'antd';
-import { PlusOutlined, BookOutlined, CloudUploadOutlined, CloudDownloadOutlined, GlobalOutlined, RocketOutlined } from '@ant-design/icons';
+import { Button, Table, Modal, Form, Input, message, Space, Tag, Typography, Tooltip, Select } from 'antd';
+import { PlusOutlined, BookOutlined, CloudUploadOutlined, CloudDownloadOutlined, GlobalOutlined, RocketOutlined, FileTextOutlined, TableOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { knowledgeApi } from '../api/knowledge';
 import type { KnowledgeBase } from '../types/knowledge';
@@ -35,7 +35,10 @@ const KnowledgeBaseList: React.FC = () => {
 
   const handleCreate = async (values: any) => {
     try {
-      await knowledgeApi.create(values);
+      await knowledgeApi.create({
+        ...values,
+        type: values.type || 'text'
+      });
       message.success('Knowledge Base created');
       setIsModalOpen(false);
       form.resetFields();
@@ -95,7 +98,23 @@ const KnowledgeBaseList: React.FC = () => {
       title: '名称',
       dataIndex: 'name',
       key: 'name',
-      render: (text: string) => <><BookOutlined /> {text}</>,
+      render: (text: string, record: KnowledgeBase) => (
+        <>
+          {record.type === 'excel' ? <TableOutlined /> : <FileTextOutlined />} {text}
+        </>
+      ),
+    },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      key: 'type',
+      render: (type: string) => (
+        type === 'excel' ? (
+          <Tag color="blue" icon={<TableOutlined />}>Excel表格</Tag>
+        ) : (
+          <Tag color="green" icon={<FileTextOutlined />}>文本</Tag>
+        )
+      ),
     },
     {
       title: '描述',
@@ -184,12 +203,22 @@ const KnowledgeBaseList: React.FC = () => {
         onOk={() => form.submit()}
         onCancel={() => setIsModalOpen(false)}
       >
-        <Form form={form} onFinish={handleCreate} layout="vertical">
+        <Form form={form} onFinish={handleCreate} layout="vertical" initialValues={{ type: 'text' }}>
           <Form.Item name="name" label="名称" rules={[{ required: true }]}>
-            <Input />
+            <Input placeholder="请输入知识库名称" />
+          </Form.Item>
+          <Form.Item name="type" label="类型" rules={[{ required: true }]}>
+            <Select>
+              <Select.Option value="text">
+                <FileTextOutlined /> 文本类型 (支持 PDF, DOCX, TXT, MD)
+              </Select.Option>
+              <Select.Option value="excel">
+                <TableOutlined /> Excel表格类型 (支持 XLSX, XLS)
+              </Select.Option>
+            </Select>
           </Form.Item>
           <Form.Item name="description" label="描述">
-            <Input.TextArea />
+            <Input.TextArea placeholder="请输入知识库描述" rows={3} />
           </Form.Item>
         </Form>
       </Modal>

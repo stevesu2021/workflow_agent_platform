@@ -1,0 +1,9 @@
+在excel_rag文件夹下面生成代码，用于构造excel格式的知识库，并生成 rag_excel_knowledge_base.py 文件。
+要求如下：
+1. 创建一个名为 rag_excel_knowledge_base.py 的文件，并导入所需的库。
+2. 给的输入包括2部分：第一部分是excel_file(excel文件，如test.xlsx), 第二部分是一个数组tobe_included，数组中包含需要包含的列。，数组包括某些列 ("系统名称", "系统编号")。
+3. 读取该excel文件，并生成一个字典，字典的键为excel文件中的每一列的标题，值为该列的数据。
+4. 拆解excel文件，每一行得到一个json，作为数据部分，再取出tobe_included列的数据，作为元数据部分。
+5. 对元数据部分进行向量化（用优秀的embedding模型Qwen/Qwen3-Embedding-0.6B），并保存到知识库文件中, 需要考虑未来知识库向量检索后，能取到对应记录的数据部分。
+6. 再创建一个名为 rag_excel_knowledge_search.py 的文件，用于对给定的文本输入，检索上一步的知识库。
+

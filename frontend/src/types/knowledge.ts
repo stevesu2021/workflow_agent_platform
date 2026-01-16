@@ -6,6 +6,9 @@ export interface Document {
   status: 'pending' | 'processing' | 'completed' | 'error';
   error_message?: string;
   chunk_count: number;
+  extra_metadata?: {
+    excel_columns?: string[];
+  };
   created_at: string;
   updated_at: string;
 }
@@ -14,6 +17,7 @@ export interface KnowledgeBase {
   id: string;
   name: string;
   description?: string;
+  type: 'text' | 'excel';
   is_published: boolean;
   created_at: string;
   updated_at: string;
@@ -24,6 +28,7 @@ export interface KnowledgeBase {
 export interface KnowledgeBaseCreate {
   name: string;
   description?: string;
+  type?: 'text' | 'excel';
 }
 
 export interface SearchResult {

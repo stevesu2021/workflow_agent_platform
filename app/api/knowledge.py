@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, desc
 import uuid
 import os
+import logging
 
 from app.core.database import get_session
 from app.models.knowledge import KnowledgeBase, Document
@@ -16,8 +17,10 @@ from app.schemas.knowledge import (
 from app.services.document_service import document_service
 from app.services.vector_service import vector_service
 from app.services.minio_service import minio_service
+from app.services.excel_service import excel_knowledge_service
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 @router.get("/", response_model=List[KnowledgeBaseListResponse])
 async def list_knowledge_bases(
@@ -39,6 +42,7 @@ async def list_knowledge_bases(
             id=kb.id,
             name=kb.name,
             description=kb.description,
+            type=kb.type,
             is_published=kb.is_published,
             document_count=doc_count,
             created_at=kb.created_at,
@@ -61,6 +65,7 @@ async def create_knowledge_base(
         id=kb.id,
         name=kb.name,
         description=kb.description,
+        type=kb.type,
         is_published=kb.is_published,
         created_at=kb.created_at,
         updated_at=kb.updated_at,
@@ -104,6 +109,7 @@ async def get_knowledge_base(
         id=kb.id,
         name=kb.name,
         description=kb.description,
+        type=kb.type,
         is_published=kb.is_published,
         created_at=kb.created_at,
         updated_at=kb.updated_at,
@@ -154,6 +160,7 @@ async def publish_knowledge_base(
         id=kb.id,
         name=kb.name,
         description=kb.description,
+        type=kb.type,
         is_published=kb.is_published,
         created_at=kb.created_at,
         updated_at=kb.updated_at,
@@ -194,6 +201,7 @@ async def unpublish_knowledge_base(
         id=kb.id,
         name=kb.name,
         description=kb.description,
+        type=kb.type,
         is_published=kb.is_published,
         created_at=kb.created_at,
         updated_at=kb.updated_at,
@@ -208,17 +216,26 @@ async def delete_knowledge_base(
     kb = await session.get(KnowledgeBase, kb_id)
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge Base not found")
-    
+
+    # First, delete all documents associated with this knowledge base
+    # This is needed because of the foreign key constraint
+    result = await session.execute(
+        select(Document).where(Document.knowledge_base_id == kb_id)
+    )
+    documents = result.scalars().all()
+
+    for doc in documents:
+        # Delete from Milvus for each document's chunks
+        # Note: We'll delete the entire collection below, so this is optional
+        await session.delete(doc)
+
     # Delete from vector store
     # Sanitize KB ID for Milvus (replace hyphens with underscores)
     sanitized_kb_id = str(kb_id).replace("-", "_")
     collection_name = f"kb_{sanitized_kb_id}"
     await vector_service.delete_collection(collection_name)
-    
-    # Documents will be cascade deleted if configured in DB, but SQLModel/SQLAlchemy default might not be cascade
-    # Let's delete documents first manually to be safe or rely on DB.
-    # We should delete files from disk too.
-    # For now, just delete DB record.
+
+    # Now delete the knowledge base
     await session.delete(kb)
     await session.commit()
     return {"success": True}
@@ -235,8 +252,8 @@ async def upload_document(
     
     # Validate file type
     ext = os.path.splitext(file.filename)[1].lower().replace(".", "")
-    if ext not in ["pdf", "txt", "md", "docx"]:
-        raise HTTPException(status_code=400, detail="Unsupported file type. Allowed: pdf, txt, md, docx")
+    if ext not in ["pdf", "txt", "md", "docx", "xlsx", "xls"]:
+        raise HTTPException(status_code=400, detail="Unsupported file type. Allowed: pdf, txt, md, docx, xlsx, xls")
     
     # Save file
     file_path = await document_service.save_file(file, kb_id)
@@ -504,3 +521,251 @@ async def search_knowledge_base(
         ))
         
     return SearchResponse(results=search_results)
+
+
+# Excel Upload Endpoints
+
+@router.post("/{kb_id}/upload-excel", response_model=DocumentResponse)
+async def upload_excel_document(
+    kb_id: uuid.UUID,
+    file: UploadFile = File(...),
+    metadata_columns: Optional[str] = Form(None),  # JSON string of column names
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Upload an Excel file to the knowledge base.
+
+    Args:
+        kb_id: Knowledge base ID
+        file: Excel file (.xlsx, .xls)
+        metadata_columns: Optional JSON string of column names to use for metadata.
+                         If not provided, all columns will be used.
+    """
+    import json
+
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    # Validate file type
+    ext = os.path.splitext(file.filename)[1].lower().replace(".", "")
+    if ext not in ["xlsx", "xls"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Allowed: xlsx, xls"
+        )
+
+    # Parse metadata columns if provided
+    columns_list = None
+    if metadata_columns:
+        try:
+            columns_list = json.loads(metadata_columns)
+            if not isinstance(columns_list, list):
+                raise ValueError("metadata_columns must be a list")
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid metadata_columns format: {str(e)}"
+            )
+
+    # Read file content
+    file_content = await file.read()
+
+    # Create Document record with metadata
+    doc = Document(
+        knowledge_base_id=kb_id,
+        filename=file.filename,
+        file_path="",  # Will be set by excel service
+        file_type=ext,
+        status="processing",
+        extra_metadata={"excel_columns": columns_list} if columns_list else None
+    )
+    session.add(doc)
+    await session.commit()
+    await session.refresh(doc)
+
+    # Process Excel file in background
+    from app.core.database import async_session_maker
+
+    async def process_excel_task(doc_id: uuid.UUID, content: bytes, filename: str, columns: Optional[List[str]]):
+        async with async_session_maker() as session:
+            doc = await session.get(Document, doc_id)
+            if not doc:
+                return
+
+            try:
+                result = await excel_knowledge_service.process_excel_upload(
+                    file_content=content,
+                    filename=filename,
+                    kb_id=str(kb_id),
+                    metadata_columns=columns
+                )
+
+                # Update document with results
+                doc.status = "completed"
+                doc.chunk_count = result.get("rows_processed", 0)
+                doc.file_path = result.get("minio_path", "")
+                logger.info(f"Excel file processed successfully: {filename}, rows: {doc.chunk_count}")
+
+            except Exception as e:
+                import traceback
+                error_detail = f"{str(e)}\n{traceback.format_exc()}"
+                logger.error(f"Error processing Excel file {filename}: {error_detail}")
+                doc.status = "error"
+                doc.error_message = str(e)
+
+            session.add(doc)
+            await session.commit()
+
+    # Start background task
+    import asyncio
+    asyncio.create_task(process_excel_task(doc.id, file_content, file.filename, columns_list))
+
+    return DocumentResponse(
+        id=doc.id,
+        knowledge_base_id=doc.knowledge_base_id,
+        filename=doc.filename,
+        file_type=doc.file_type,
+        status=doc.status,
+        error_message=doc.error_message,
+        chunk_count=doc.chunk_count,
+        created_at=doc.created_at,
+        updated_at=doc.updated_at
+    )
+
+
+@router.post("/{kb_id}/excel-columns")
+async def get_excel_columns(
+    kb_id: uuid.UUID,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Get column names from an uploaded Excel file without processing it.
+    Useful for the frontend to show available columns before uploading.
+    """
+    import tempfile
+
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    # Validate file type
+    ext = os.path.splitext(file.filename)[1].lower().replace(".", "")
+    if ext not in ["xlsx", "xls"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported file type. Allowed: xlsx, xls"
+        )
+
+    # Read file content
+    file_content = await file.read()
+
+    # Save to temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp_file:
+        tmp_file.write(file_content)
+        tmp_file_path = tmp_file.name
+
+    try:
+        # Get column names
+        columns = excel_knowledge_service.get_excel_columns(tmp_file_path)
+        return {"columns": columns}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error reading Excel file: {str(e)}"
+        )
+    finally:
+        # Clean up temporary file
+        if os.path.exists(tmp_file_path):
+            os.unlink(tmp_file_path)
+
+
+@router.post("/{kb_id}/documents/{doc_id}/reprocess-excel")
+async def reprocess_excel_document(
+    kb_id: uuid.UUID,
+    doc_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Reprocess an Excel document that failed or needs to be re-processed.
+    Reads the file from MinIO and processes it again with stored metadata columns.
+    """
+    # Verify knowledge base exists
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    # Get document
+    doc = await session.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status_code=400, detail="Document does not belong to this Knowledge Base")
+
+    # Check if it's an Excel file
+    if doc.file_type not in ["xlsx", "xls"]:
+        raise HTTPException(status_code=400, detail="Only Excel files can be reprocessed with this endpoint")
+
+    # Check if extra_metadata contains excel_columns
+    if not doc.extra_metadata or "excel_columns" not in doc.extra_metadata:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot reprocess: original column metadata not found. Please re-upload the file."
+        )
+
+    # Get file from MinIO
+    try:
+        file_content = minio_service.download_file_content(doc.file_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve file from storage: {str(e)}")
+
+    # Update status to processing
+    doc.status = "processing"
+    doc.error_message = None
+    session.add(doc)
+    await session.commit()
+
+    # Process in background
+    from app.core.database import async_session_maker
+
+    async def reprocess_excel_task(doc_id: uuid.UUID, content: bytes, filename: str, columns: List[str]):
+        async with async_session_maker() as session:
+            doc = await session.get(Document, doc_id)
+            if not doc:
+                return
+
+            try:
+                result = await excel_knowledge_service.process_excel_upload(
+                    file_content=content,
+                    filename=filename,
+                    kb_id=str(kb_id),
+                    metadata_columns=columns
+                )
+
+                doc.status = "completed"
+                doc.chunk_count = result.get("rows_processed", 0)
+                doc.file_path = result.get("minio_path", "")
+                logger.info(f"Excel file reprocessed successfully: {filename}, rows: {doc.chunk_count}")
+
+            except Exception as e:
+                import traceback
+                error_detail = f"{str(e)}\n{traceback.format_exc()}"
+                logger.error(f"Error reprocessing Excel file {filename}: {error_detail}")
+                doc.status = "error"
+                doc.error_message = str(e)
+
+            session.add(doc)
+            await session.commit()
+
+    background_tasks.add_task(
+        reprocess_excel_task,
+        doc.id,
+        file_content,
+        doc.filename,
+        doc.extra_metadata["excel_columns"]
+    )
+
+    return {"message": "Reprocessing started"}

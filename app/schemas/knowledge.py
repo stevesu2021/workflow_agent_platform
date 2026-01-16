@@ -6,6 +6,7 @@ from pydantic import BaseModel
 class KnowledgeBaseBase(BaseModel):
     name: str
     description: Optional[str] = None
+    type: str = "text"  # text or excel
 
 class KnowledgeBaseCreate(KnowledgeBaseBase):
     pass
@@ -13,6 +14,7 @@ class KnowledgeBaseCreate(KnowledgeBaseBase):
 class KnowledgeBaseUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    type: Optional[str] = None
 
 class DocumentResponse(BaseModel):
     id: uuid.UUID
@@ -22,6 +24,7 @@ class DocumentResponse(BaseModel):
     status: str
     error_message: Optional[str]
     chunk_count: int
+    extra_metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
 
@@ -36,6 +39,7 @@ class KnowledgeBaseListResponse(BaseModel):
     id: uuid.UUID
     name: str
     description: Optional[str]
+    type: str
     is_published: bool
     document_count: int
     created_at: datetime

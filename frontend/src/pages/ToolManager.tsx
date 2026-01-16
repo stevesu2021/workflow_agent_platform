@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo } from 'react';
-import { Button, Modal, Form, Input, Select, message, Tabs, Card, Row, Col, Typography, Empty, Tag, Tooltip } from 'antd';
+import { Button, Modal, Form, Input, Select, message, Tabs, Card, Row, Col, Typography, Empty, Tag, Tooltip, Space } from 'antd';
 import { PlusOutlined, EditOutlined, DeleteOutlined, AppstoreOutlined, SearchOutlined } from '@ant-design/icons';
 import * as AntIcons from '@ant-design/icons';
 import { getTools, createTool, updateTool, deleteTool } from '../api/tools';
@@ -156,11 +156,10 @@ const ToolManager: React.FC = () => {
             <Row gutter={[16, 16]}>
               {filteredITTools.map((tool) => (
                 <Col xs={24} sm={12} md={8} lg={6} xl={4} key={tool.path}>
-                  <Card 
-                    hoverable 
+                  <Card
+                    hoverable
                     onClick={() => openITTool(tool.path)}
-                    style={{ height: '100%', display: 'flex', flexDirection: 'column' }}
-                    bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column' }}
+                    styles={{ body: { height: '100%', display: 'flex', flexDirection: 'column' } }}
                   >
                     <div style={{ display: 'flex', alignItems: 'center', marginBottom: 12 }}>
                       <div style={{ fontSize: 24, color: '#1890ff', marginRight: 12 }}>
@@ -278,7 +277,7 @@ const ToolManager: React.FC = () => {
         footer={null}
         width="90%"
         style={{ top: 20 }}
-        bodyStyle={{ padding: 0, height: '85vh' }}
+        styles={{ body: { padding: 0, height: '85vh' } }}
         destroyOnClose
       >
         {iframeUrl && (

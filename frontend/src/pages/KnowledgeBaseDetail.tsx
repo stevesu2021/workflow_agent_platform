@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Button, Table, Upload, message, Input, List, Tag, Tabs, Space, Divider, Typography, Modal, Tooltip, InputNumber } from 'antd';
-import { UploadOutlined, SearchOutlined, ArrowLeftOutlined, ReloadOutlined, DownloadOutlined, FileMarkdownOutlined } from '@ant-design/icons';
+import { Card, Button, Table, Upload, message, Input, List, Tag, Tabs, Space, Divider, Typography, Modal, Tooltip, InputNumber, Select, Form, Alert, Checkbox } from 'antd';
+import { UploadOutlined, SearchOutlined, ArrowLeftOutlined, ReloadOutlined, DownloadOutlined, FileMarkdownOutlined, TableOutlined, FileTextOutlined } from '@ant-design/icons';
 import { knowledgeApi } from '../api/knowledge';
 import type { KnowledgeBase, Document, SearchResult } from '../types/knowledge';
 
-const { Title, Paragraph } = Typography;
+const { Title, Paragraph, Text } = Typography;
 
 const KnowledgeBaseDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -24,6 +24,14 @@ const KnowledgeBaseDetail: React.FC = () => {
   const [chunksVisible, setChunksVisible] = useState(false);
   const [chunksList, setChunksList] = useState<SearchResult[]>([]);
   const [chunksLoading, setChunksLoading] = useState(false);
+
+  // Excel-specific states
+  const [excelColumns, setExcelColumns] = useState<string[]>([]);
+  const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
+  const [excelUploading, setExcelUploading] = useState(false);
+  const [excelUploadModalVisible, setExcelUploadModalVisible] = useState(false);
+  const [excelFile, setExcelFile] = useState<File | null>(null);
+  const [form] = Form.useForm();
 
   // Polling for processing status
   useEffect(() => {
@@ -93,6 +101,17 @@ const KnowledgeBaseDetail: React.FC = () => {
     }
   };
 
+  const handleReprocessExcel = async (docId: string) => {
+    if (!id) return;
+    try {
+      await knowledgeApi.reprocessExcelDocument(id, docId);
+      message.success('重新处理已启动');
+      fetchKb();
+    } catch (error) {
+      message.error('启动重新处理失败');
+    }
+  };
+
   const handleViewChunks = async (doc: Document) => {
     if (!id) return;
     setChunksLoading(true);
@@ -126,6 +145,75 @@ const KnowledgeBaseDetail: React.FC = () => {
       setPreviewContent('Error loading content.');
     } finally {
       setPreviewLoading(false);
+    }
+  };
+
+  // Excel-specific handlers
+  const handleOpenExcelUploadModal = () => {
+    setExcelUploadModalVisible(true);
+    setExcelColumns([]);
+    setSelectedColumns([]);
+    setExcelFile(null);
+    form.resetFields();
+  };
+
+  const handleExcelFileSelect = (file: File) => {
+    const isExcel = file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+                    file.type === 'application/vnd.ms-excel' ||
+                    file.name.endsWith('.xlsx') ||
+                    file.name.endsWith('.xls');
+    if (!isExcel) {
+      message.error('Please upload an Excel file (.xlsx or .xls)');
+      return false;
+    }
+    setExcelFile(file);
+    // Fetch columns from the Excel file
+    fetchExcelColumns(file);
+    return false; // Prevent auto upload
+  };
+
+  const fetchExcelColumns = async (file: File) => {
+    if (!id) return;
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+      // First upload temporarily to get columns
+      const response = await fetch(`/api/knowledge-bases/${id}/excel-columns`, {
+        method: 'POST',
+        body: formData
+      });
+      if (!response.ok) throw new Error('Failed to fetch columns');
+      const data = await response.json();
+      setExcelColumns(data.columns || []);
+    } catch (error) {
+      message.error('Failed to read Excel columns');
+    }
+  };
+
+  const handleExcelUpload = async () => {
+    if (!id || !excelFile) return;
+    const values = await form.validateFields();
+    if (!values.columns || values.columns.length === 0) {
+      message.error('Please select at least one column');
+      return;
+    }
+
+    setExcelUploading(true);
+    const formData = new FormData();
+    formData.append('file', excelFile);
+    formData.append('metadata_columns', JSON.stringify(values.columns));
+
+    try {
+      await knowledgeApi.uploadExcelDocument(id, formData);
+      message.success('Excel file uploaded successfully');
+      setExcelUploadModalVisible(false);
+      form.resetFields();
+      fetchKb();
+    } catch (error) {
+      message.error('Failed to upload Excel file');
+    } finally {
+      setExcelUploading(false);
     }
   };
 
@@ -238,60 +326,98 @@ const KnowledgeBaseDetail: React.FC = () => {
     {
       title: 'Action',
       key: 'action',
-      render: (_: any, record: Document) => (
-        <Space>
-           {record.status === 'pending' || record.status === 'error' ? (
-             <Button size="small" type="primary" onClick={() => handleProcess(record.id)}>Process</Button>
-           ) : null}
-           {record.status === 'completed' ? (
-             <Button size="small" onClick={() => handleProcess(record.id)}>Reindex</Button>
-           ) : null}
-           {record.status === 'processing' ? (
-             <Tag icon={<ReloadOutlined spin />} color="processing">Processing</Tag>
-           ) : null}
-           <Button size="small" onClick={() => handlePreview(record)}>Preview</Button>
-           <Tooltip title="Download Original">
-             <Button 
-                size="small" 
-                icon={<DownloadOutlined />} 
-                onClick={() => window.open(`/api/knowledge-bases/${id}/documents/${record.id}/file?download=true`, '_blank')}
-             />
-           </Tooltip>
-           {record.status === 'completed' ? (
-             <Tooltip title="Download Markdown">
-                <Button 
-                    size="small" 
-                    icon={<FileMarkdownOutlined />} 
-                    onClick={() => window.open(`/api/knowledge-bases/${id}/documents/${record.id}/markdown`, '_blank')}
-                />
+      render: (_: any, record: Document) => {
+        // Excel files are processed automatically on upload, no manual process needed
+        const isExcelFile = record.file_type === 'xlsx' || record.file_type === 'xls';
+        // Check if Excel file has metadata for reprocessing (only new uploads have this)
+        const hasExcelMetadata = isExcelFile && record.extra_metadata && record.extra_metadata.excel_columns;
+
+        return (
+          <Space>
+             {!isExcelFile && (record.status === 'pending' || record.status === 'error') ? (
+               <Button size="small" type="primary" onClick={() => handleProcess(record.id)}>Process</Button>
+             ) : null}
+             {!isExcelFile && record.status === 'completed' ? (
+               <Button size="small" onClick={() => handleProcess(record.id)}>Reindex</Button>
+             ) : null}
+             {/* Excel files can be reprocessed only if they have metadata (new uploads) */}
+             {hasExcelMetadata && (record.status === 'error' || record.status === 'completed') ? (
+               <Button size="small" type={record.status === 'error' ? 'primary' : 'default'} onClick={() => handleReprocessExcel(record.id)}>
+                 {record.status === 'error' ? '重新处理' : '重新索引'}
+               </Button>
+             ) : null}
+             {/* Old Excel files without metadata show a message */}
+             {isExcelFile && !hasExcelMetadata && (record.status === 'error' || record.status === 'completed') ? (
+               <Tooltip title="旧文档缺少元数据，请删除后重新上传">
+                 <Button size="small" disabled>无法重新处理</Button>
+               </Tooltip>
+             ) : null}
+             {record.status === 'processing' ? (
+               <Tag icon={<ReloadOutlined spin />} color="processing">Processing</Tag>
+             ) : null}
+             {!isExcelFile && <Button size="small" onClick={() => handlePreview(record)}>Preview</Button>}
+             <Tooltip title="Download Original">
+               <Button
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  onClick={() => window.open(`/api/knowledge-bases/${id}/documents/${record.id}/file?download=true`, '_blank')}
+               />
              </Tooltip>
-           ) : null}
-        </Space>
-      ),
+             {!isExcelFile && record.status === 'completed' ? (
+               <Tooltip title="Download Markdown">
+                  <Button
+                      size="small"
+                      icon={<FileMarkdownOutlined />}
+                      onClick={() => window.open(`/api/knowledge-bases/${id}/documents/${record.id}/markdown`, '_blank')}
+                  />
+               </Tooltip>
+             ) : null}
+          </Space>
+        );
+      },
     },
   ];
 
   if (!kb) return <div>Loading...</div>;
 
+  const isExcelType = kb.type === 'excel';
+
   return (
     <div>
       <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/knowledge')} style={{ marginBottom: 16 }}>
-        Back to List
+        返回列表
       </Button>
-      
+
       <Card>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
-                <Title level={3}>{kb.name}</Title>
-                <Paragraph>{kb.description}</Paragraph>
+                <Title level={3}>
+                  {isExcelType ? <TableOutlined /> : <FileTextOutlined />} {kb.name}
+                </Title>
+                <Paragraph>
+                  <Tag color={isExcelType ? 'blue' : 'green'}>
+                    {isExcelType ? 'Excel表格类型' : '文本类型'}
+                  </Tag>
+                  {kb.description && <> - {kb.description}</>}
+                </Paragraph>
             </div>
-            <Upload 
-                beforeUpload={handleUpload} 
+            {isExcelType ? (
+              <Button
+                icon={<UploadOutlined />}
+                onClick={handleOpenExcelUploadModal}
+                type="primary"
+              >
+                上传Excel文件
+              </Button>
+            ) : (
+              <Upload
+                beforeUpload={handleUpload}
                 showUploadList={false}
                 accept=".pdf,.txt,.md,.docx"
-            >
-                <Button icon={<UploadOutlined />} loading={uploading} type="primary">Upload Document</Button>
-            </Upload>
+              >
+                <Button icon={<UploadOutlined />} loading={uploading} type="primary">上传文档</Button>
+              </Upload>
+            )}
         </div>
       </Card>
 
@@ -426,6 +552,73 @@ const KnowledgeBaseDetail: React.FC = () => {
             </div>
           </div>
         )}
+      </Modal>
+
+      {/* Excel Upload Modal */}
+      <Modal
+        title="上传Excel文件"
+        open={excelUploadModalVisible}
+        onCancel={() => setExcelUploadModalVisible(false)}
+        onOk={handleExcelUpload}
+        confirmLoading={excelUploading}
+        width={600}
+        okText="上传"
+        cancelText="取消"
+      >
+        <Alert
+          title="Excel文件上传说明"
+          description="系统将读取Excel文件并将每一行转换为向量。请选择需要用于搜索和元数据的列。"
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+
+        <Form form={form} layout="vertical">
+          <Form.Item label="选择Excel文件">
+            <Upload
+              beforeUpload={handleExcelFileSelect}
+              showUploadList={true}
+              accept=".xlsx,.xls"
+              onRemove={() => {
+                setExcelFile(null);
+                setExcelColumns([]);
+                setSelectedColumns([]);
+              }}
+              maxCount={1}
+            >
+              <Button icon={<UploadOutlined />} disabled={!!excelFile}>
+                选择文件
+              </Button>
+            </Upload>
+          </Form.Item>
+
+          {excelColumns.length > 0 && (
+            <Form.Item
+              name="columns"
+              label="选择用于向量搜索的列"
+              rules={[{ required: true, message: '请至少选择一列' }]}
+              extra="选中的列内容将组合生成向量，用于语义搜索"
+            >
+              <Checkbox.Group style={{ width: '100%' }}>
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {excelColumns.map(col => (
+                    <Checkbox key={col} value={col}>
+                      {col}
+                    </Checkbox>
+                  ))}
+                </Space>
+              </Checkbox.Group>
+            </Form.Item>
+          )}
+
+          {excelFile && (
+            <div style={{ marginTop: 16, padding: 12, backgroundColor: '#f6f6f6', borderRadius: 4 }}>
+              <Text type="secondary">
+                已选择文件: <Text strong>{excelFile.name}</Text>
+              </Text>
+            </div>
+          )}
+        </Form>
       </Modal>
     </div>
   );

@@ -45,6 +45,14 @@ export const knowledgeApi = {
     return handleResponse(response);
   },
 
+  uploadExcelDocument: async (id: string, formData: FormData): Promise<Document> => {
+    const response = await fetch(`/api/knowledge-bases/${id}/upload-excel`, {
+      method: 'POST',
+      body: formData,
+    });
+    return handleResponse(response);
+  },
+
   processDocument: async (kbId: string, docId: string): Promise<void> => {
     const response = await fetch(`/api/knowledge-bases/${kbId}/documents/${docId}/process`, {
       method: 'POST',
@@ -80,6 +88,13 @@ export const knowledgeApi = {
 
   unpublish: async (id: string): Promise<KnowledgeBase> => {
     const response = await fetch(`/api/knowledge-bases/${id}/unpublish`, {
+      method: 'POST',
+    });
+    return handleResponse(response);
+  },
+
+  reprocessExcelDocument: async (kbId: string, docId: string): Promise<void> => {
+    const response = await fetch(`/api/knowledge-bases/${kbId}/documents/${docId}/reprocess-excel`, {
       method: 'POST',
     });
     return handleResponse(response);
