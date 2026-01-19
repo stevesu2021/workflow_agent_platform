@@ -254,45 +254,30 @@ class VectorService:
     async def search(self, collection_name: str, query: str, top_k: int = 5, score_threshold: float = 0.0) -> List[Tuple[LangchainDocument, float]]:
         """
         Search for documents.
+
+        Returns scores as similarity (0-1, higher is better).
+        L2 distance is converted to similarity using: 1 / (1 + distance)
         """
         vector_store = self.get_collection(collection_name)
-        
+
         try:
-            # similarity_search_with_score returns (doc, score)
-            # For Milvus, default metric is usually L2 or IP.
-            # LangChain's Milvus wrapper usually converts distance to similarity if configured,
-            # but standard `similarity_search_with_score` returns distance for L2.
-            results = vector_store.similarity_search_with_score(query, k=top_k)
-            
-            # Normalize scores or handle them based on metric?
-            # If using Inner Product (IP), higher is better.
-            # If using L2, lower is better.
-            # LangChain Milvus defaults: metric_type="L2". 
-            # So `score` is distance. 
-            
-            # User wants "score" and "topk".
-            # Let's assume relevance. If L2, we might want to convert to similarity 1/(1+d) or just return distance.
-            # But the existing code used `similarity_search_with_relevance_scores` (0..1).
-            # Milvus wrapper in newer langchain might support `similarity_search_with_relevance_scores`.
-            # Let's try `similarity_search_with_relevance_scores` first.
-            
-            # Note: `similarity_search_with_relevance_scores` is implemented in base VectorStore
-            # but relies on `_similarity_search_with_relevance_scores` implementation in subclass.
-            # Milvus subclass implementation:
-            # It seems it might not always be implemented or reliable for all metrics.
-            # Let's fallback to `similarity_search_with_score` and return raw scores for now,
-            # but the interface expects (doc, score).
-            
-            results = vector_store.similarity_search_with_score(query, k=top_k)
-            
-            # For L2, lower is closer. But user expects "highest score" usually implies similarity.
-            # Let's just return what we get, but filter if needed.
-            # Since we can't easily normalize without knowing the exact distribution, 
-            # we will return the raw score.
-            
-            # Filter? If L2, threshold logic is reversed (score <= threshold).
-            # If we stick to generic `similarity_search`, we get docs.
-            
+            # Get raw results with L2 distance
+            raw_results = vector_store.similarity_search_with_score(query, k=top_k)
+
+            # Convert L2 distance to similarity (0-1, higher is better)
+            # Formula: similarity = 1 / (1 + distance)
+            # distance=0 -> similarity=1.0 (perfect match)
+            # distance=1 -> similarity=0.5
+            # distance=inf -> similarity=0
+            results = []
+            for doc, distance in raw_results:
+                similarity = 1.0 / (1.0 + distance)
+                results.append((doc, similarity))
+
+            # Filter by score_threshold if specified
+            if score_threshold > 0:
+                results = [(doc, score) for doc, score in results if score >= score_threshold]
+
             return results
         except Exception as e:
             print(f"Search failed: {e}")
@@ -304,29 +289,32 @@ class VectorService:
         """
         try:
             vector_store = self.get_collection(collection_name)
-            
+
             # Use PyMilvus collection directly for query
-            # Accessing the internal collection object from LangChain wrapper might be tricky 
+            # Accessing the internal collection object from LangChain wrapper might be tricky
             # as it might not be exposed publicly.
             # But we can create a Collection object directly using pymilvus if we know the name.
             from pymilvus import Collection
-            
+
             # Ensure connection
             # We already connected in __init__
-            
+
             col = Collection(collection_name)
-            
+
             # Load collection to memory before query
             col.load()
-            
-            # Query
-            # We need to return output fields. 'text' is where LangChain stores content usually.
-            # And metadata fields.
-            res = col.query(
-                expr=expr, 
-                output_fields=["text", "source", "document_id", "chunk_id", "pk"]
-            )
-            
+
+            # Query - get all available fields by not specifying output_fields
+            # This allows dynamic schema to work properly
+            try:
+                res = col.query(expr=expr)
+            except Exception as e:
+                # If query fails, try with common fields
+                res = col.query(
+                    expr=expr,
+                    output_fields=["text", "source", "document_id", "chunk_id", "pk", "row_index", "source_type"]
+                )
+
             return res
         except Exception as e:
             print(f"Query failed: {e}")

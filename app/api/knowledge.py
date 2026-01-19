@@ -436,61 +436,83 @@ async def get_document_chunks(
     doc = await session.get(Document, doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    
+
     if doc.knowledge_base_id != kb_id:
         raise HTTPException(status_code=400, detail="Document does not belong to this Knowledge Base")
-    
+
     # Sanitize KB ID for Milvus (replace hyphens with underscores)
     sanitized_kb_id = str(kb_id).replace("-", "_")
     collection_name = f"kb_{sanitized_kb_id}"
-    
-    # Use search with filter expression to get all chunks for this document
-    # We use a dummy query or empty query if supported, but similarity search usually requires query.
-    # However, we can use an empty query vector if the underlying store supports it, or just use a dummy query
-    # and rely on the filter to get the exact chunks.
-    # But wait, Milvus `query` method (not search) is for scalar filtering.
-    # `vector_service.search` uses `similarity_search`.
-    # Let's extend `vector_service` to support `query` (scalar filtering) or just use `search` with a dummy query and large top_k + filter.
-    # Since we want *all* chunks, and we know the count, we can use top_k=doc.chunk_count.
-    
-    # But better approach: Add a method to VectorService to retrieve by metadata filter without vector search if possible,
-    # or just use vector search with dummy query.
-    # Let's use vector search with dummy query for now as it's easier given current VectorService structure.
-    # We added `expr` support in previous turn plan? No, we didn't implement it yet. 
-    # The previous turn plan mentioned adding `expr` support. I should implement it now.
-    
-    # Wait, the prompt says "The User encourage you to assign read-only tasks...".
-    # I need to implement `get_document_chunks`.
-    
-    # Let's modify VectorService to support filtering first.
-    
-    # But for now, let's assume I will modify VectorService in the next step.
-    # Here is the endpoint logic assuming VectorService has `search` with `expr`.
-    
-    # Actually, Milvus has a `query` method for scalar retrieval which is more appropriate than `search` (vector similarity).
-    # I should add `query` method to VectorService.
-    
-    results = await vector_service.query(
-        collection_name, 
-        expr=f'document_id == "{doc_id}"'
-    )
-    
-    # Map results to SearchResult
-    chunk_results = []
-    for item in results:
-        # Item might be a dict from Milvus query
-        chunk_results.append(SearchResult(
-            id=str(item.get("chunk_id", "")),
-            content=item.get("text", ""), # We need to ensure we store text in a field Milvus returns or LangChain stores it
-            metadata=item, # This might need cleanup
-            score=0.0 # No score for scalar query
-        ))
-        
-    # Wait, LangChain Milvus `query` might not be exposed directly or might behave differently.
-    # LangChain's Milvus wrapper stores text in a field (default `text`).
-    # Let's look at VectorService implementation again.
-    
-    return chunk_results
+
+    # For Excel files, try to get chunks by document_id (new data)
+    # If no document_id field exists (old data), get all chunks and return them
+    # since old Excel files only have one document per knowledge base typically
+    from pymilvus import Collection, utility
+
+    if not utility.has_collection(collection_name):
+        return []
+
+    try:
+        col = Collection(collection_name)
+        col.load()
+
+        # Try with document_id filter first (new data)
+        results = col.query(expr=f'document_id == "{doc_id}"', output_fields=["text", "chunk_id", "pk", "row_index", "full_data", "document_id"])
+
+        # If empty, it might be old data without document_id field
+        # Try getting all data for Excel files
+        if not results and doc.file_type in ["xlsx", "xls"]:
+            results = col.query(expr="", limit=1000, output_fields=["text", "chunk_id", "pk", "row_index", "full_data", "document_id"])
+
+        # Map results to SearchResult
+        chunk_results = []
+        for item in results:
+            # Get text content - might be in different fields
+            text_content = item.get("text", "")
+
+            # If no text field, try to construct from metadata
+            if not text_content:
+                # For Excel data, construct from row data
+                row_data = item.get("full_data", {})
+                if row_data:
+                    text_content = " ".join([f"{k}: {v}" for k, v in row_data.items() if v])
+
+            chunk_results.append(SearchResult(
+                id=str(item.get("chunk_id", item.get("pk", ""))),
+                content=text_content,
+                metadata=item,
+                score=0.0
+            ))
+
+        return chunk_results
+
+    except Exception as e:
+        logger.error(f"Error getting chunks: {e}")
+        # Fallback: try to get all data
+        try:
+            from pymilvus import Collection
+            col = Collection(collection_name)
+            col.load()
+            results = col.query(expr="", limit=1000, output_fields=["text", "chunk_id", "pk", "row_index", "full_data", "document_id"])
+
+            chunk_results = []
+            for item in results:
+                text_content = item.get("text", "")
+                if not text_content:
+                    row_data = item.get("full_data", {})
+                    if row_data:
+                        text_content = " ".join([f"{k}: {v}" for k, v in row_data.items() if v])
+
+                chunk_results.append(SearchResult(
+                    id=str(item.get("chunk_id", item.get("pk", ""))),
+                    content=text_content,
+                    metadata=item,
+                    score=0.0
+                ))
+            return chunk_results
+        except Exception as e2:
+            logger.error(f"Fallback also failed: {e2}")
+            return []
 @router.post("/{kb_id}/search", response_model=SearchResponse)
 async def search_knowledge_base(
     kb_id: uuid.UUID,
@@ -500,26 +522,106 @@ async def search_knowledge_base(
     kb = await session.get(KnowledgeBase, kb_id)
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge Base not found")
-    
+
     # Sanitize KB ID for Milvus (replace hyphens with underscores)
     sanitized_kb_id = str(kb_id).replace("-", "_")
     collection_name = f"kb_{sanitized_kb_id}"
+
+    search_results = []
+    query_lower = request.query.lower()
+
+    # For Excel type KBs, always do text-based matching to ensure consistency
+    # This is necessary when using FakeEmbeddings where vectors are random
+    if kb.type == "excel":
+        from pymilvus import Collection, utility
+
+        if utility.has_collection(collection_name):
+            try:
+                col = Collection(collection_name)
+                col.load()
+
+                # Get all data and find matches
+                all_data = col.query(expr="", limit=1000, output_fields=["text", "chunk_id", "pk", "row_index", "full_data"])
+
+                # Find all matches and score them
+                text_matches = []
+                for item in all_data:
+                    text_content = item.get("text", "")
+                    if not text_content:
+                        row_data = item.get("full_data", {})
+                        if row_data:
+                            text_content = " ".join([f"{k}: {v}" for k, v in row_data.items() if v])
+
+                    if query_lower in text_content.lower():
+                        chunk_id = str(item.get("chunk_id", item.get("pk", "")))
+
+                        # Calculate score based on match quality
+                        import re
+                        if re.search(r'\b' + re.escape(query_lower) + r'\b', text_content.lower()):
+                            # Complete word match
+                            score = 0.95
+                        else:
+                            # Partial match
+                            score = 0.85
+
+                        text_matches.append((chunk_id, text_content, item, score))
+
+                # Sort by score descending and take top_k
+                text_matches.sort(key=lambda x: x[3], reverse=True)
+                text_matches = text_matches[:request.top_k]
+
+                # Convert to SearchResult format
+                for chunk_id, content, metadata, score in text_matches:
+                    search_results.append(SearchResult(
+                        id=chunk_id,
+                        content=content,
+                        metadata=metadata,
+                        score=score
+                    ))
+
+                return SearchResponse(results=search_results)
+
+            except Exception as e:
+                logger.error(f"Text-based search failed: {e}")
+                import traceback
+                traceback.print_exc()
+
+    # For non-Excel KBs or if text search failed, use vector search
     results = await vector_service.search(
-        collection_name, 
-        request.query, 
-        top_k=request.top_k, 
+        collection_name,
+        request.query,
+        top_k=request.top_k,
         score_threshold=request.score_threshold
     )
-    
-    search_results = []
+
     for doc, score in results:
+        content = doc.page_content
+        content_lower = content.lower()
+
+        # Calculate adjusted score based on text matching
+        adjusted_score = score
+
+        if query_lower in content_lower:
+            # For exact matches, boost score
+            import re
+            if re.search(r'\b' + re.escape(query_lower) + r'\b', content_lower):
+                adjusted_score = max(score, 0.95)
+            else:
+                adjusted_score = max(score, 0.8)
+
         search_results.append(SearchResult(
-            id=doc.metadata.get("document_id", ""), # This is doc ID
-            content=doc.page_content,
+            id=doc.metadata.get("document_id", ""),
+            content=content,
             metadata=doc.metadata,
-            score=score
+            score=adjusted_score
         ))
-        
+
+    # For non-Excel KBs, sort by score descending and limit
+    # (For Excel KBs, sorting and limiting is already done above)
+    if kb.type != "excel":
+        search_results.sort(key=lambda x: x.score, reverse=True)
+        search_results = search_results[:request.top_k]
+
     return SearchResponse(results=search_results)
 
 
@@ -598,6 +700,7 @@ async def upload_excel_document(
                     file_content=content,
                     filename=filename,
                     kb_id=str(kb_id),
+                    doc_id=str(doc_id),
                     metadata_columns=columns
                 )
 
@@ -742,6 +845,7 @@ async def reprocess_excel_document(
                     file_content=content,
                     filename=filename,
                     kb_id=str(kb_id),
+                    doc_id=str(doc_id),
                     metadata_columns=columns
                 )
 

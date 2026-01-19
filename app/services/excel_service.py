@@ -51,7 +51,8 @@ class ExcelKnowledgeService:
         self,
         row_data: Dict[str, str],
         metadata_columns: List[str],
-        row_index: int
+        row_index: int,
+        doc_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a single Excel row into a format suitable for vector storage.
@@ -84,20 +85,26 @@ class ExcelKnowledgeService:
         for col, value in row_data.items():
             full_data[col] = str(value) if pd.notna(value) else ""
 
+        # Build metadata with document_id if provided
+        result_metadata = {
+            **metadata,
+            "row_index": str(row_index),
+            "full_data": full_data,
+            "source_type": "excel"
+        }
+        if doc_id:
+            result_metadata["document_id"] = doc_id
+
         return {
             "text": text_content,
-            "metadata": {
-                **metadata,
-                "row_index": str(row_index),
-                "full_data": full_data,
-                "source_type": "excel"
-            }
+            "metadata": result_metadata
         }
 
     async def process_excel_file(
         self,
         file_path: str,
         kb_id: str,
+        doc_id: Optional[str] = None,
         metadata_columns: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
@@ -148,8 +155,8 @@ class ExcelKnowledgeService:
                     value = excel_data[col][i]
                     row_data[col] = str(value) if pd.notna(value) else ""
 
-                # Process row
-                processed = self.process_excel_row(row_data, metadata_columns, i)
+                # Process row with document_id
+                processed = self.process_excel_row(row_data, metadata_columns, i, doc_id)
 
                 texts.append(processed["text"])
                 metadatas.append(processed["metadata"])
@@ -184,6 +191,7 @@ class ExcelKnowledgeService:
         file_content: bytes,
         filename: str,
         kb_id: str,
+        doc_id: Optional[str] = None,
         metadata_columns: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
@@ -215,9 +223,10 @@ class ExcelKnowledgeService:
             )
 
             # Process Excel file
-            result = self.process_excel_file(
+            result = await self.process_excel_file(
                 file_path=tmp_file_path,
                 kb_id=kb_id,
+                doc_id=doc_id,
                 metadata_columns=metadata_columns
             )
 

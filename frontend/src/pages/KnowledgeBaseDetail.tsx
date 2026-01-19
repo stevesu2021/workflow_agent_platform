@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Button, Table, Upload, message, Input, List, Tag, Tabs, Space, Divider, Typography, Modal, Tooltip, InputNumber, Select, Form, Alert, Checkbox } from 'antd';
-import { UploadOutlined, SearchOutlined, ArrowLeftOutlined, ReloadOutlined, DownloadOutlined, FileMarkdownOutlined, TableOutlined, FileTextOutlined } from '@ant-design/icons';
+import { Card, Button, Table, Upload, message, Input, List, Tag, Tabs, Space, Divider, Typography, Modal, Tooltip, InputNumber, Select, Form, Alert, Checkbox, Descriptions } from 'antd';
+import { UploadOutlined, SearchOutlined, ArrowLeftOutlined, ReloadOutlined, DownloadOutlined, FileMarkdownOutlined, TableOutlined, FileTextOutlined, EyeOutlined } from '@ant-design/icons';
 import { knowledgeApi } from '../api/knowledge';
 import type { KnowledgeBase, Document, SearchResult } from '../types/knowledge';
 
@@ -31,7 +31,25 @@ const KnowledgeBaseDetail: React.FC = () => {
   const [excelUploading, setExcelUploading] = useState(false);
   const [excelUploadModalVisible, setExcelUploadModalVisible] = useState(false);
   const [excelFile, setExcelFile] = useState<File | null>(null);
+  const [indexColumnsModalVisible, setIndexColumnsModalVisible] = useState(false);
   const [form] = Form.useForm();
+
+  // Extract index columns from documents
+  const indexColumnsInfo = useMemo(() => {
+    if (!kb?.documents) return [];
+    const info: Array<{ filename: string; columns: string[] }> = [];
+    kb.documents.forEach(doc => {
+      if (doc.file_type === 'xlsx' || doc.file_type === 'xls') {
+        if (doc.extra_metadata?.excel_columns) {
+          info.push({
+            filename: doc.filename,
+            columns: doc.extra_metadata.excel_columns
+          });
+        }
+      }
+    });
+    return info;
+  }, [kb?.documents]);
 
   // Polling for processing status
   useEffect(() => {
@@ -402,13 +420,21 @@ const KnowledgeBaseDetail: React.FC = () => {
                 </Paragraph>
             </div>
             {isExcelType ? (
-              <Button
-                icon={<UploadOutlined />}
-                onClick={handleOpenExcelUploadModal}
-                type="primary"
-              >
-                上传Excel文件
-              </Button>
+              <Space>
+                <Button
+                  icon={<EyeOutlined />}
+                  onClick={() => setIndexColumnsModalVisible(true)}
+                >
+                  查看索引列
+                </Button>
+                <Button
+                  icon={<UploadOutlined />}
+                  onClick={handleOpenExcelUploadModal}
+                  type="primary"
+                >
+                  上传Excel文件
+                </Button>
+              </Space>
             ) : (
               <Upload
                 beforeUpload={handleUpload}
@@ -619,6 +645,55 @@ const KnowledgeBaseDetail: React.FC = () => {
             </div>
           )}
         </Form>
+      </Modal>
+
+      {/* Index Columns Modal */}
+      <Modal
+        title="索引列信息"
+        open={indexColumnsModalVisible}
+        onCancel={() => setIndexColumnsModalVisible(false)}
+        footer={[
+          <Button key="close" onClick={() => setIndexColumnsModalVisible(false)}>
+            关闭
+          </Button>
+        ]}
+        width={700}
+      >
+        {indexColumnsInfo.length === 0 ? (
+          <Alert
+            message="暂无索引列信息"
+            description="当前知识库中没有已处理的Excel文件，或者文件是在更新之前上传的（缺少列元数据）。请上传新的Excel文件。"
+            type="info"
+            showIcon
+          />
+        ) : (
+          <div style={{ maxHeight: '500px', overflowY: 'auto' }}>
+            {indexColumnsInfo.map((info, idx) => (
+              <Card
+                key={idx}
+                size="small"
+                style={{ marginBottom: 12 }}
+                title={
+                  <Space>
+                    <FileMarkdownOutlined />
+                    <Text strong>{info.filename}</Text>
+                  </Space>
+                }
+              >
+                <div style={{ marginBottom: 8 }}>
+                  <Text type="secondary">用于索引的列 ({info.columns.length}个):</Text>
+                </div>
+                <Space wrap>
+                  {info.columns.map(col => (
+                    <Tag key={col} color="blue">
+                      {col}
+                    </Tag>
+                  ))}
+                </Space>
+              </Card>
+            ))}
+          </div>
+        )}
       </Modal>
     </div>
   );
