@@ -14,7 +14,8 @@ class AgentService:
         agent = Agent(
             name=agent_data.name,
             description=agent_data.description,
-            icon=agent_data.icon
+            icon=agent_data.icon,
+            type=agent_data.type  # Include type field to support agentic/workflow types
         )
         self.session.add(agent)
         await self.session.commit()
@@ -74,6 +75,7 @@ class AgentService:
                 name=agent_data.name,
                 description=agent_data.description,
                 icon=agent_data.icon,
+                type=agent_data.type,  # Include type field to support changing agent type
                 updated_at=datetime.utcnow()
             )
         )

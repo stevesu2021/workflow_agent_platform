@@ -44,6 +44,11 @@ export interface AgenticConfig {
   prologue: string;
   resource_files?: ResourceFile[];
   io_config?: IOConfig;
+  // Resource knowledge base ID for reloading
+  resource_knowledge_base_id?: string;
+  // Documents for persistence
+  requirements_doc?: string;
+  decomposition_doc?: string;
 }
 
 export interface ResourceFile {

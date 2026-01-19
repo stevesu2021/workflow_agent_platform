@@ -103,20 +103,38 @@ const AgenticStudio: React.FC = () => {
         ...config
       });
 
+      // Load vocabulary
       if (config.vocabulary) {
         setVocabulary(config.vocabulary);
       }
 
+      // Load IO config
       if (config.io_config) {
         setIoConfig(config.io_config);
       }
 
+      // Load resource files
       if (config.resource_files) {
         setResourceFiles(config.resource_files.map((f: any, i: number) => ({
           uid: `${i}`,
           name: f.name,
           status: f.status || 'done'
         })));
+      }
+
+      // Load resource knowledge base ID
+      if (config.resource_knowledge_base_id) {
+        setResourceKnowledgeBaseId(config.resource_knowledge_base_id);
+      }
+
+      // Load requirements document
+      if (config.requirements_doc) {
+        setRequirementsDoc(config.requirements_doc);
+      }
+
+      // Load decomposition document
+      if (config.decomposition_doc) {
+        setDecompositionDoc(config.decomposition_doc);
       }
     } catch (error) {
       message.error('Failed to load agent');
@@ -234,7 +252,12 @@ const AgenticStudio: React.FC = () => {
           name: f.name,
           status: f.status
         })),
-        io_config: ioConfig
+        io_config: ioConfig,
+        // Save resource KB ID for reloading
+        resource_knowledge_base_id: resourceKnowledgeBaseId,
+        // Save documents if they exist
+        requirements_doc: requirementsDoc || undefined,
+        decomposition_doc: decompositionDoc || undefined
       };
 
       const agentData: AgentCreate = {
@@ -248,6 +271,9 @@ const AgenticStudio: React.FC = () => {
       // Generate requirements document
       const reqDoc = generateRequirementsDoc(agentData, agentConfig);
       setRequirementsDoc(reqDoc);
+
+      // Update config with generated requirements doc
+      agentConfig.requirements_doc = reqDoc;
 
       if (id) {
         await agentsApi.update(id, agentData);
