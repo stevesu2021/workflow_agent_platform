@@ -19,22 +19,103 @@ class AgentService:
         self.session.add(agent)
         await self.session.commit()
         await self.session.refresh(agent)
-        
+
         # 2. Create Initial Version
+        # Ensure flow_json is a dict
+        if hasattr(agent_data.flow_json, 'model_dump'):
+            flow_json = agent_data.flow_json.model_dump()
+        elif isinstance(agent_data.flow_json, dict):
+            flow_json = agent_data.flow_json
+        else:
+            flow_json = {}
+
         version = AgentVersion(
             agent_id=agent.id,
             version=1,
-            flow_json=agent_data.flow_json.model_dump(),
+            flow_json=flow_json,
             config={}
         )
         self.session.add(version)
         await self.session.commit()
-        
+
         return agent
 
     async def get_agent(self, agent_id: uuid.UUID) -> Agent:
-        result = await self.session.execute(select(Agent).where(Agent.id == agent_id))
+        from sqlalchemy.orm import selectinload
+        result = await self.session.execute(
+            select(Agent)
+            .options(selectinload(Agent.versions))
+            .where(Agent.id == agent_id)
+        )
         return result.scalars().first()
+
+    async def update_agent(self, agent_id: uuid.UUID, agent_data: AgentCreate) -> Optional[Agent]:
+        from datetime import datetime
+        from sqlalchemy import update
+
+        # First check if agent exists
+        agent = await self.get_agent(agent_id)
+        if not agent:
+            return None
+
+        # Ensure flow_json is a dict
+        if hasattr(agent_data.flow_json, 'model_dump'):
+            flow_json = agent_data.flow_json.model_dump()
+        elif isinstance(agent_data.flow_json, dict):
+            flow_json = agent_data.flow_json
+        else:
+            flow_json = {}
+
+        # Update agent using update statement for better async handling
+        update_stmt = (
+            update(Agent)
+            .where(Agent.id == agent_id)
+            .values(
+                name=agent_data.name,
+                description=agent_data.description,
+                icon=agent_data.icon,
+                updated_at=datetime.utcnow()
+            )
+        )
+        await self.session.execute(update_stmt)
+
+        # Get latest version
+        latest_version = await self.get_latest_version(agent_id)
+        if latest_version:
+            # Update version using update statement
+            update_version_stmt = (
+                update(AgentVersion)
+                .where(AgentVersion.id == latest_version.id)
+                .values(
+                    flow_json=flow_json,
+                    config=agent_data.config or {}
+                )
+            )
+            await self.session.execute(update_version_stmt)
+        else:
+            # Create new version if none exists
+            version = AgentVersion(
+                agent_id=agent.id,
+                version=1,
+                flow_json=flow_json,
+                config=agent_data.config or {}
+            )
+            self.session.add(version)
+
+        await self.session.commit()
+
+        # Refresh and return updated agent
+        from sqlalchemy.orm import selectinload
+
+        # Re-query the agent with versions relationship loaded
+        result = await self.session.execute(
+            select(Agent)
+            .options(selectinload(Agent.versions))
+            .where(Agent.id == agent_id)
+        )
+        agent = result.scalars().first()
+
+        return agent
 
     async def list_agents(self) -> list[Agent]:
         result = await self.session.execute(select(Agent))
