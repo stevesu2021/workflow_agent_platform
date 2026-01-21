@@ -11,7 +11,7 @@ import {
   UploadOutlined, FileOutlined, DeleteOutlined, LoadingOutlined,
   ApiOutlined, FormOutlined, FileTextOutlined,
   CheckSquareOutlined, SelectOutlined, InboxOutlined, ExportOutlined,
-  EyeOutlined, DownloadOutlined
+  EyeOutlined, DownloadOutlined, CodeOutlined, ApartmentOutlined
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { agentsApi } from '../api/agents';
@@ -64,6 +64,18 @@ const AgenticStudio: React.FC = () => {
   const [decompositionDoc, setDecompositionDoc] = useState<string>('');
   const [generatingDecomposition, setGeneratingDecomposition] = useState(false);
   const [decompDocModalVisible, setDecompDocModalVisible] = useState(false);
+
+  // State for generated code
+  const [generatedCode, setGeneratedCode] = useState<any>(null);
+  const [generatingCode, setGeneratingCode] = useState(false);
+  const [codeModalVisible, setCodeModalVisible] = useState(false);
+  const [graphModalVisible, setGraphModalVisible] = useState(false);
+
+  // State for running agent
+  const [runModalVisible, setRunModalVisible] = useState(false);
+  const [runningAgent, setRunningAgent] = useState(false);
+  const [runInputs, setRunInputs] = useState<Record<string, any>>({});
+  const [runOutputs, setRunOutputs] = useState<Record<string, any>>({});
 
   useEffect(() => {
     fetchResources();
@@ -268,7 +280,7 @@ const AgenticStudio: React.FC = () => {
         config: agentConfig as any
       };
 
-      // Generate requirements document
+      // Generate requirements document (basic info only)
       const reqDoc = generateRequirementsDoc(agentData, agentConfig);
       setRequirementsDoc(reqDoc);
 
@@ -277,15 +289,14 @@ const AgenticStudio: React.FC = () => {
 
       if (id) {
         await agentsApi.update(id, agentData);
-        message.success('Agent updated successfully. Requirements document generated.');
+        message.success('智能体保存成功！点击"生成代码"开始生成实现代码。');
       } else {
         const newAgent = await agentsApi.create(agentData);
-        message.success('Agent created successfully. Requirements document generated.');
+        message.success('智能体创建成功！点击"生成代码"开始生成实现代码。');
         navigate(`/agentic/${newAgent.id}`);
       }
 
-      // Generate decomposition document using thinking LLM
-      await generateDecomposition(agentData, agentConfig);
+      // Note: Decomposition is now done as part of "Generate Code" flow
     } catch (error) {
       message.error('Failed to save agent');
     } finally {
@@ -294,7 +305,7 @@ const AgenticStudio: React.FC = () => {
   };
 
   // Generate decomposition document using AI
-  const generateDecomposition = async (agentData: any, config: AgenticConfig) => {
+  const generateDecomposition = async (agentData: any, config: AgenticConfig, saveToDb: boolean = false, agentId: string = null) => {
     try {
       setGeneratingDecomposition(true);
       message.loading('正在生成需求拆解文档...', 0);
@@ -315,9 +326,18 @@ const AgenticStudio: React.FC = () => {
       }
 
       const data = await response.json();
-      setDecompositionDoc(data.decomposition);
+      const decompDoc = data.decomposition;
+      setDecompositionDoc(decompDoc);
+
+      // Save to database if requested
+      if (saveToDb && agentId) {
+        config.decomposition_doc = decompDoc;
+        agentData.config.decomposition_doc = decompDoc;
+        await agentsApi.update(agentId, agentData);
+      }
+
       message.destroy();
-      message.success('需求拆解文档生成成功！点击"查看需求拆解"查看详情。');
+      message.success(saveToDb ? '需求拆解文档生成成功并已保存！' : '需求拆解文档生成成功！点击"查看需求拆解"查看详情。');
     } catch (error: any) {
       message.destroy();
       message.error(`需求拆解失败: ${error.message || '未知错误'}`);
@@ -375,9 +395,240 @@ const AgenticStudio: React.FC = () => {
       setRequirementsDoc(reqDoc);
 
       // Generate decomposition
-      await generateDecomposition(agentData, agentConfig);
+      await generateDecomposition(agentData, agentConfig, true, id);
     } catch (error: any) {
       message.error(`重新拆解失败: ${error.message || '表单验证失败'}`);
+    }
+  };
+
+  // Handle generate OpenManus + LangGraph code
+  const handleGenerateCode = async () => {
+    if (!id) {
+      message.error('请先保存智能体后再生成代码');
+      return;
+    }
+
+    try {
+      setGeneratingCode(true);
+
+      // Step 1: Generate decomposition if not exists
+      if (!decompositionDoc) {
+        message.loading('正在生成需求拆解文档...', 0);
+
+        // Get current form values for decomposition
+        const values = await form.validateFields();
+        let kbList = values.knowledge_bases || [];
+        if (resourceKnowledgeBaseId && !kbList.includes(resourceKnowledgeBaseId)) {
+          kbList = [...kbList, resourceKnowledgeBaseId];
+        }
+
+        const agentConfig: AgenticConfig = {
+          model_thinking: values.model_thinking,
+          model_summary: values.model_summary,
+          max_thoughts: values.max_thoughts,
+          tools: values.tools || [],
+          knowledge_bases: kbList,
+          task_description: values.task_description || '',
+          vocabulary: vocabulary,
+          memory_config: { variables: {}, tables: [], snippets: [] },
+          prologue: values.prologue,
+          resource_files: resourceFiles.map(f => ({ name: f.name, status: f.status })),
+          io_config: ioConfig,
+          resource_knowledge_base_id: resourceKnowledgeBaseId,
+          requirements_doc: requirementsDoc || undefined,
+          decomposition_doc: undefined
+        };
+
+        const agentData: AgentCreate = {
+          name: values.name,
+          description: values.description,
+          type: 'agentic',
+          flow_json: {},
+          config: agentConfig as any
+        };
+
+        const response = await fetch('http://localhost:8001/agents/analyze-requirements', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent_data: agentData, config: agentConfig })
+        });
+
+        if (!response.ok) {
+          throw new Error('Failed to generate decomposition document');
+        }
+
+        const data = await response.json();
+        const decompDoc = data.decomposition;
+        setDecompositionDoc(decompDoc);
+
+        // Save decomposition document to database
+        agentConfig.decomposition_doc = decompDoc;
+        agentData.config.decomposition_doc = decompDoc;
+        await agentsApi.update(id, agentData);
+
+        message.destroy();
+        message.success('需求拆解文档生成成功并已保存！');
+      }
+
+      // Step 2: Generate code
+      message.loading('正在生成OpenManus + LangGraph代码...', 0);
+
+      const codeResponse = await fetch('http://localhost:8001/agents/generate-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent_id: id })
+      });
+
+      if (!codeResponse.ok) {
+        const errorData = await codeResponse.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to generate code');
+      }
+
+      const codeData = await codeResponse.json();
+      setGeneratedCode(codeData);
+      message.destroy();
+      message.success(`代码生成成功！保存路径: ${codeData.workspace_dir}`);
+    } catch (error: any) {
+      message.destroy();
+      message.error(`操作失败: ${error.message || '未知错误'}`);
+      console.error('Generate code error:', error);
+    } finally {
+      setGeneratingCode(false);
+    }
+  };
+
+  // Handle run agent
+  const handleRunAgent = async () => {
+    if (!id) {
+      message.error('请先保存智能体后再运行');
+      return;
+    }
+
+    if (!generatedCode) {
+      message.error('请先生成代码后再运行');
+      return;
+    }
+
+    setRunModalVisible(true);
+  };
+
+  // Execute agent run
+  const executeAgentRun = async () => {
+    try {
+      setRunningAgent(true);
+      message.loading('正在运行智能体...', 0);
+
+      // Prepare uploaded files
+      const formData = new FormData();
+      formData.append('agent_id', id);
+
+      // Add input values
+      formData.append('inputs', JSON.stringify(runInputs));
+
+      // Add uploaded files
+      const fileInputs = ioConfig.inputs.filter(f => f.type === 'file');
+      for (const field of fileInputs) {
+        const file = runInputs[field.name];
+        if (file && file instanceof File) {
+          formData.append(`file_${field.name}`, file);
+        }
+      }
+
+      const response = await fetch('http://localhost:8001/agents/run-agent', {
+        method: 'POST',
+        body: formData
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to run agent');
+      }
+
+      const data = await response.json();
+      setRunOutputs(data.outputs || {});
+      message.destroy();
+      message.success('智能体运行成功！');
+    } catch (error: any) {
+      message.destroy();
+      message.error(`运行失败: ${error.message || '未知错误'}`);
+      console.error('Run agent error:', error);
+    } finally {
+      setRunningAgent(false);
+    }
+  };
+
+  // Render input field based on type
+  const renderInputField = (field: IOField) => {
+    const value = runInputs[field.name] || field.default_value || '';
+
+    switch (field.type) {
+      case 'text':
+        return (
+          <Input
+            placeholder={field.placeholder || `请输入${field.label}`}
+            value={value}
+            onChange={(e) => setRunInputs({ ...runInputs, [field.name]: e.target.value })}
+          />
+        );
+      case 'textarea':
+        return (
+          <TextArea
+            placeholder={field.placeholder || `请输入${field.label}`}
+            value={value}
+            onChange={(e) => setRunInputs({ ...runInputs, [field.name]: e.target.value })}
+            rows={4}
+          />
+        );
+      case 'number':
+        return (
+          <InputNumber
+            placeholder={field.placeholder || `请输入${field.label}`}
+            value={value}
+            onChange={(val) => setRunInputs({ ...runInputs, [field.name]: val })}
+            style={{ width: '100%' }}
+          />
+        );
+      case 'file':
+        return (
+          <Upload
+            beforeUpload={(file) => {
+              setRunInputs({ ...runInputs, [field.name]: file });
+              return false;
+            }}
+            onRemove={() => {
+              setRunInputs({ ...runInputs, [field.name]: null });
+            }}
+            maxCount={1}
+          >
+            <Button icon={<UploadOutlined />}>
+              {value ? '重新上传' : '上传文件'}
+            </Button>
+          </Upload>
+        );
+      case 'select':
+        return (
+          <Select
+            placeholder={field.placeholder || `请选择${field.label}`}
+            value={value}
+            onChange={(val) => setRunInputs({ ...runInputs, [field.name]: val })}
+            style={{ width: '100%' }}
+          >
+            {field.options?.map(opt => (
+              <Option key={opt} value={opt}>{opt}</Option>
+            ))}
+          </Select>
+        );
+      case 'checkbox':
+        return (
+          <Checkbox
+            checked={value}
+            onChange={(e) => setRunInputs({ ...runInputs, [field.name]: e.target.checked })}
+          >
+            {field.label}
+          </Checkbox>
+        );
+      default:
+        return null;
     }
   };
 
@@ -927,37 +1178,78 @@ const AgenticStudio: React.FC = () => {
               style={{ height: '100%' }}
               styles={{ body: { height: 'calc(100% - 58px)', overflow: 'auto' } }}
               extra={
-                <Space>
-                  {requirementsDoc && (
+                <Space wrap>
+                  <Tooltip title={requirementsDoc ? "查看基础需求文档" : "请先保存智能体"}>
                     <Button
                       size="small"
                       icon={<EyeOutlined />}
                       onClick={() => setReqDocModalVisible(true)}
+                      disabled={!requirementsDoc}
                     >
                       查看需求文档
                     </Button>
-                  )}
-                  {decompositionDoc && (
+                  </Tooltip>
+
+                  <Tooltip title={decompositionDoc ? "查看AI拆解后的需求文档" : "请先点击'生成代码'生成需求拆解"}>
                     <Button
                       size="small"
                       icon={<FileTextOutlined />}
                       onClick={() => setDecompDocModalVisible(true)}
-                      type="primary"
+                      disabled={!decompositionDoc}
                     >
-                      查看需求拆解
+                      查看拆解文档
                     </Button>
-                  )}
-                  {requirementsDoc && (
+                  </Tooltip>
+
+                  <Tooltip title={requirementsDoc ? "重新生成需求拆解文档" : "请先保存智能体"}>
                     <Button
                       size="small"
                       icon={<ThunderboltOutlined />}
                       onClick={handleRegenerateDecomposition}
                       loading={generatingDecomposition}
+                      disabled={!requirementsDoc}
                     >
-                      重新拆解需求
+                      重新拆解
                     </Button>
-                  )}
-                  {(requirementsDoc || decompositionDoc) && (
+                  </Tooltip>
+
+                  <Tooltip title={id ? "生成OpenManus + LangGraph实现代码" : "请先保存智能体"}>
+                    <Button
+                      size="small"
+                      icon={<CodeOutlined />}
+                      onClick={handleGenerateCode}
+                      loading={generatingCode}
+                      disabled={!id}
+                      style={{ backgroundColor: '#52c41a', borderColor: '#52c41a', color: !id ? '#d9d9d9' : 'white' }}
+                    >
+                      生成代码
+                    </Button>
+                  </Tooltip>
+
+                  <Tooltip title={generatedCode ? "查看LangGraph流程图" : "请先生成代码"}>
+                    <Button
+                      size="small"
+                      icon={<ApartmentOutlined />}
+                      onClick={() => setGraphModalVisible(true)}
+                      disabled={!generatedCode}
+                    >
+                      查看流程图
+                    </Button>
+                  </Tooltip>
+
+                  <Tooltip title={generatedCode ? "运行智能体代码" : "请先生成代码"}>
+                    <Button
+                      size="small"
+                      icon={<PlayCircleOutlined />}
+                      onClick={handleRunAgent}
+                      disabled={!generatedCode}
+                      style={{ backgroundColor: '#1890ff', borderColor: '#1890ff', color: !generatedCode ? '#d9d9d9' : 'white' }}
+                    >
+                      运行代码
+                    </Button>
+                  </Tooltip>
+
+                  <Tooltip title={requirementsDoc || decompositionDoc ? "下载文档" : "请先保存或生成文档"}>
                     <Button
                       size="small"
                       icon={<DownloadOutlined />}
@@ -972,10 +1264,11 @@ const AgenticStudio: React.FC = () => {
                         a.click();
                         URL.revokeObjectURL(url);
                       }}
+                      disabled={!requirementsDoc && !decompositionDoc}
                     >
-                      下载
+                      下载文档
                     </Button>
-                  )}
+                  </Tooltip>
                 </Space>
               }
             >
@@ -1163,6 +1456,128 @@ const AgenticStudio: React.FC = () => {
         </div>
       </Modal>
 
+      {/* LangGraph Visualization Modal */}
+      <Modal
+        title="LangGraph 流程图"
+        open={graphModalVisible}
+        onCancel={() => setGraphModalVisible(false)}
+        width={900}
+        footer={[
+          <Button key="close" onClick={() => setGraphModalVisible(false)}>
+            关闭
+          </Button>
+        ]}
+      >
+        {generatedCode?.graph ? (
+          <div style={{ padding: '20px' }}>
+            {/* Graph visualization using SVG */}
+            <svg
+              width="100%"
+              height="400"
+              style={{ border: '1px solid #d9d9d9', borderRadius: '8px', backgroundColor: '#fafafa' }}
+            >
+              <defs>
+                <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                  <polygon points="0 0, 10 3, 0 6" fill="#1890ff" />
+                </marker>
+              </defs>
+              {/* Render edges */}
+              {generatedCode.graph.edges?.map((edge: any, index: number) => {
+                const fromNode = generatedCode.graph.nodes.find((n: any) => n.id === edge.from);
+                const toNode = generatedCode.graph.nodes.find((n: any) => n.id === edge.to);
+                if (!fromNode || !toNode) return null;
+
+                // Simple layout calculation
+                const nodeCount = generatedCode.graph.nodes.length;
+                const fromIndex = generatedCode.graph.nodes.indexOf(fromNode);
+                const toIndex = generatedCode.graph.nodes.indexOf(toNode);
+
+                const x1 = 80 + (fromIndex * 150) % 700;
+                const y1 = 80 + Math.floor((fromIndex * 150) / 700) * 120;
+                const x2 = 80 + (toIndex * 150) % 700;
+                const y2 = 80 + Math.floor((toIndex * 150) / 700) * 120;
+
+                return (
+                  <g key={`edge-${index}`}>
+                    <line
+                      x1={x1}
+                      y1={y1}
+                      x2={x2}
+                      y2={y2}
+                      stroke="#1890ff"
+                      strokeWidth="2"
+                      markerEnd="url(#arrowhead)"
+                    />
+                  </g>
+                );
+              })}
+
+              {/* Render nodes */}
+              {generatedCode.graph.nodes?.map((node: any, index: number) => {
+                const x = 80 + (index * 150) % 700;
+                const y = 80 + Math.floor((index * 150) / 700) * 120;
+
+                return (
+                  <g key={`node-${index}`}>
+                    <rect
+                      x={x - 50}
+                      y={y - 20}
+                      width="100"
+                      height="40"
+                      rx="6"
+                      fill="#722ed1"
+                      stroke="#531dab"
+                      strokeWidth="2"
+                    />
+                    <text
+                      x={x}
+                      y={y + 5}
+                      textAnchor="middle"
+                      fill="white"
+                      fontSize="12"
+                      fontWeight="bold"
+                    >
+                      {node.label || node.id}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+
+            {/* Node descriptions */}
+            <div style={{ marginTop: '20px' }}>
+              <Title level={5}>节点说明</Title>
+              {generatedCode.graph.nodes?.map((node: any, index: number) => (
+                <Card key={index} size="small" style={{ marginBottom: '8px' }}>
+                  <Space direction="vertical" size={0}>
+                    <Text strong>{node.label || node.id}</Text>
+                    <Text type="secondary" style={{ fontSize: '12px' }}>
+                      {node.description || '暂无描述'}
+                    </Text>
+                  </Space>
+                </Card>
+              ))}
+            </div>
+
+            {/* Workspace info */}
+            {generatedCode.workspace_dir && (
+              <Alert
+                message={`代码已生成到: ${generatedCode.workspace_dir}`}
+                description="包含 agent.py, config.py, nodes.py, tools.py, requirements.txt, README.md 等文件"
+                type="success"
+                showIcon
+                style={{ marginTop: '16px' }}
+              />
+            )}
+          </div>
+        ) : (
+          <div style={{ textAlign: 'center', padding: '40px' }}>
+            <ApartmentOutlined style={{ fontSize: 48, color: '#ccc' }} />
+            <p style={{ color: '#999' }}>暂无流程图数据</p>
+          </div>
+        )}
+      </Modal>
+
       {/* IO Field Edit Modal */}
       <Modal
         title={`${currentIoField ? 'Edit' : 'Add'} ${ioModalMode === 'input' ? 'Input' : 'Output'} Field`}
@@ -1259,6 +1674,95 @@ const AgenticStudio: React.FC = () => {
             <Input placeholder="Default value for this field" />
           </Form.Item>
         </Form>
+      </Modal>
+
+      {/* Agent Run Modal */}
+      <Modal
+        title="运行智能体"
+        open={runModalVisible}
+        onCancel={() => setRunModalVisible(false)}
+        width={800}
+        footer={[
+          <Button key="cancel" onClick={() => setRunModalVisible(false)}>
+            取消
+          </Button>,
+          <Button
+            key="run"
+            type="primary"
+            icon={<PlayCircleOutlined />}
+            onClick={executeAgentRun}
+            loading={runningAgent}
+          >
+            运行
+          </Button>
+        ]}
+      >
+        <div style={{ maxHeight: '60vh', overflow: 'auto' }}>
+          {/* Inputs Section */}
+          {ioConfig.inputs.length > 0 && (
+            <div style={{ marginBottom: 24 }}>
+              <Title level={5}>输入参数</Title>
+              <Space direction="vertical" style={{ width: '100%' }} size={16}>
+                {ioConfig.inputs.map(field => (
+                  <div key={field.id}>
+                    <div style={{ marginBottom: 8 }}>
+                      <Text strong>
+                        {field.label}
+                        {field.required && <Tag color="red" size="small" style={{ marginLeft: 4 }}>必填</Tag>}
+                      </Text>
+                      {field.description && (
+                        <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                          {field.description}
+                        </div>
+                      )}
+                    </div>
+                    {renderInputField(field)}
+                  </div>
+                ))}
+              </Space>
+            </div>
+          )}
+
+          {/* Outputs Section - show after run */}
+          {Object.keys(runOutputs).length > 0 && (
+            <div>
+              <Title level={5}>输出结果</Title>
+              <Space direction="vertical" style={{ width: '100%' }} size={16}>
+                {ioConfig.outputs.map(field => {
+                  const value = runOutputs[field.name];
+                  return (
+                    <div key={field.id}>
+                      <Text strong>{field.label}</Text>
+                      <div
+                        style={{
+                          marginTop: 8,
+                          padding: 12,
+                          backgroundColor: '#f5f5f5',
+                          borderRadius: 4,
+                          minHeight: 60,
+                          whiteSpace: 'pre-wrap',
+                          wordBreak: 'break-word'
+                        }}
+                      >
+                        {value || '(等待运行...)'}
+                      </div>
+                    </div>
+                  );
+                })}
+              </Space>
+            </div>
+          )}
+
+          {/* Instructions */}
+          {Object.keys(runOutputs).length === 0 && (
+            <Alert
+              message="填写输入参数后点击运行"
+              description="智能体将根据您的输入执行相应的任务并返回结果"
+              type="info"
+              showIcon
+            />
+          )}
+        </div>
       </Modal>
     </div>
   );
