@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   Form, Input, Button, Card, Row, Col, Select, InputNumber,
   Tabs, Tag, Space, Typography, Divider, message, Spin, Tooltip, Upload, Alert,
-  Checkbox, Modal, Switch, Radio, Collapse, Descriptions
+  Checkbox, Modal, Switch, Radio, Collapse, Descriptions, Drawer, Timeline
 } from 'antd';
 import {
   SaveOutlined, PlayCircleOutlined, ArrowLeftOutlined,
@@ -11,7 +11,7 @@ import {
   UploadOutlined, FileOutlined, DeleteOutlined, LoadingOutlined,
   ApiOutlined, FormOutlined, FileTextOutlined,
   CheckSquareOutlined, SelectOutlined, InboxOutlined, ExportOutlined,
-  EyeOutlined, DownloadOutlined, CodeOutlined, ApartmentOutlined
+  EyeOutlined, DownloadOutlined, CodeOutlined, ApartmentOutlined, ReloadOutlined
 } from '@ant-design/icons';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { agentsApi } from '../api/agents';
@@ -76,6 +76,20 @@ const AgenticStudio: React.FC = () => {
   const [runningAgent, setRunningAgent] = useState(false);
   const [runInputs, setRunInputs] = useState<Record<string, any>>({});
   const [runOutputs, setRunOutputs] = useState<Record<string, any>>({});
+
+  // State for loop count
+  const [loopCount, setLoopCount] = useState(0);
+  const [maxLoops] = useState(10);
+
+  // State for default input configuration
+  const [defaultInputModalVisible, setDefaultInputModalVisible] = useState(false);
+  const [currentInputField, setCurrentInputField] = useState<IOField | null>(null);
+  const [defaultInputForm] = Form.useForm();
+
+  // State for process log drawer
+  const [logDrawerVisible, setLogDrawerVisible] = useState(false);
+  const [agentLogs, setAgentLogs] = useState<any[]>([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
 
   useEffect(() => {
     fetchResources();
@@ -410,8 +424,9 @@ const AgenticStudio: React.FC = () => {
 
     try {
       setGeneratingCode(true);
+      setLoopCount(0); // Reset loop count
 
-      // Step 1: Generate decomposition if not exists
+      // Reset decomposition if needed
       if (!decompositionDoc) {
         message.loading('正在生成需求拆解文档...', 0);
 
@@ -467,31 +482,48 @@ const AgenticStudio: React.FC = () => {
         await agentsApi.update(id, agentData);
 
         message.destroy();
-        message.success('需求拆解文档生成成功并已保存！');
       }
 
-      // Step 2: Generate code
-      message.loading('正在生成OpenManus + LangGraph代码...', 0);
+      // Open log drawer to show progress
+      setLogDrawerVisible(true);
+      handleFetchLogs();
 
-      const codeResponse = await fetch('http://localhost:8001/agents/generate-code', {
+      message.loading('正在生成代码并运行智能体（自动修复模式）...', 0);
+
+      // Call generate-and-run API
+      const response = await fetch('http://localhost:8001/agents/generate-and-run', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agent_id: id })
+        body: JSON.stringify({
+          agent_id: id,
+          max_loops: maxLoops
+        })
       });
 
-      if (!codeResponse.ok) {
-        const errorData = await codeResponse.json().catch(() => ({}));
-        throw new Error(errorData.detail || 'Failed to generate code');
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || 'Generate and run failed');
       }
 
-      const codeData = await codeResponse.json();
-      setGeneratedCode(codeData);
+      // Update loop count
+      setLoopCount(result.loop_count || 0);
+
       message.destroy();
-      message.success(`代码生成成功！保存路径: ${codeData.workspace_dir}`);
+
+      if (result.success) {
+        message.success(`智能体运行成功！完成于第 ${result.loop_count} 次循环`);
+      } else {
+        message.warning(`智能体运行结束: ${result.message || '达到最大循环次数'}`);
+      }
+
+      // Refresh logs
+      handleFetchLogs();
+
     } catch (error: any) {
       message.destroy();
       message.error(`操作失败: ${error.message || '未知错误'}`);
-      console.error('Generate code error:', error);
+      console.error('Generate and run error:', error);
     } finally {
       setGeneratingCode(false);
     }
@@ -744,6 +776,70 @@ const AgenticStudio: React.FC = () => {
       doc += `\`\`\`\n${config.prologue}\n\`\`\`\n\n`;
     }
 
+    // Resource List (新增)
+    doc += `## 10. 资源清单\n\n`;
+    doc += `本文智能体使用以下资源：\n\n`;
+
+    // LLM Models
+    doc += `### 大模型配置\n\n`;
+    doc += `**思考模型 (Thinking Model)**:\n`;
+    doc += `- 名称: ${config.model_thinking}\n`;
+    doc += `- 用途: 复杂推理、任务规划、决策分析\n\n`;
+
+    doc += `**总结模型 (Summary Model)**:\n`;
+    doc += `- 名称: ${config.model_summary}\n`;
+    doc += `- 用途: 信息提取、结果汇总、格式化输出\n\n`;
+
+    // Knowledge Bases
+    if (config.knowledge_bases && config.knowledge_bases.length > 0) {
+      doc += `### 知识库配置\n\n`;
+      for (const kbId of config.knowledge_bases) {
+        const kb = availableKnowledgeBases.find(k => k.id === kbId);
+        if (kb) {
+          doc += `- **${kb.name}**\n`;
+          doc += `  - ID: \`${kb.id}\`\n`;
+          doc += `  - 类型: ${kb.type}\n`;
+          if (kb.description) doc += `  - 描述: ${kb.description}\n`;
+          doc += `\n`;
+        }
+      }
+    }
+
+    // Tools
+    if (config.tools && config.tools.length > 0) {
+      doc += `### 工具列表\n\n`;
+      for (const toolName of config.tools) {
+        const tool = availableTools.find(t => t.name === toolName);
+        if (tool) {
+          doc += `- **${tool.name}**\n`;
+          if (tool.description) doc += `  - 描述: ${tool.description}\n`;
+          doc += `  - 类型: ${tool.type}\n`;
+        } else {
+          doc += `- **${toolName}**\n`;
+        }
+        doc += `\n`;
+      }
+    }
+
+    // Resource Files
+    if (config.resource_files && config.resource_files.length > 0) {
+      doc += `### 资源附件\n\n`;
+      doc += `以下文件已上传并整合到知识库中：\n\n`;
+      for (const file of config.resource_files) {
+        doc += `- **${file.name}**\n`;
+        doc += `  - 状态: ${file.status}\n`;
+      }
+      doc += `\n`;
+    }
+
+    // API Endpoints (for reference)
+    doc += `### 服务端点\n\n`;
+    doc += `- **API 基础地址**: \`${window.location.origin}/api\`\n`;
+    doc += `- **知识库 API**: \`/api/knowledge/\`\n`;
+    doc += `- **工具 API**: \`/api/tools/\`\n`;
+    doc += `- **AI 资源 API**: \`/api/ai-resources/\`\n`;
+    doc += `\n`;
+
     doc += `---\n\n`;
     doc += `*本文档由 Workflow Agent Platform 自动生成*\n`;
 
@@ -845,6 +941,57 @@ const AgenticStudio: React.FC = () => {
       case 'checkbox': return <CheckSquareOutlined />;
       default: return <FormOutlined />;
     }
+  };
+
+  // Handle default input configuration
+  const handleConfigureDefaultInput = (field: IOField) => {
+    setCurrentInputField(field);
+    defaultInputForm.setFieldsValue({
+      default_value: field.default_value || ''
+    });
+    setDefaultInputModalVisible(true);
+  };
+
+  const handleDefaultInputOk = () => {
+    defaultInputForm.validateFields().then(values => {
+      if (currentInputField) {
+        setIoConfig(prev => ({
+          ...prev,
+          inputs: prev.inputs.map(f =>
+            f.id === currentInputField.id
+              ? { ...f, default_value: values.default_value }
+              : f
+          )
+        }));
+        message.success(`已配置 ${currentInputField.label} 的默认值`);
+      }
+      setDefaultInputModalVisible(false);
+      defaultInputForm.resetFields();
+      setCurrentInputField(null);
+    });
+  };
+
+  // Handle fetch logs
+  const handleFetchLogs = async () => {
+    if (!id) return;
+    setLoadingLogs(true);
+    try {
+      const response = await fetch(`http://localhost:8001/agents/${id}/logs`);
+      if (response.ok) {
+        const data = await response.json();
+        setAgentLogs(data.logs || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch logs:', error);
+    } finally {
+      setLoadingLogs(false);
+    }
+  };
+
+  // Open log drawer and fetch logs
+  const handleOpenLogDrawer = () => {
+    setLogDrawerVisible(true);
+    handleFetchLogs();
   };
 
   if (loading) return <Spin size="large" style={{ display: 'block', margin: '50px auto' }} />;
@@ -1071,6 +1218,15 @@ const AgenticStudio: React.FC = () => {
                         style={{ backgroundColor: '#fafafa' }}
                         extra={
                           <Space>
+                            {field.required && (
+                              <Button
+                                type="link"
+                                size="small"
+                                onClick={() => handleConfigureDefaultInput(field)}
+                              >
+                                配置默认值
+                              </Button>
+                            )}
                             <Button
                               type="link"
                               size="small"
@@ -1178,7 +1334,19 @@ const AgenticStudio: React.FC = () => {
               style={{ height: '100%' }}
               styles={{ body: { height: 'calc(100% - 58px)', overflow: 'auto' } }}
               extra={
-                <Space wrap>
+                <>
+                  {/* Loop Counter Display */}
+                  <Space style={{ marginRight: 16 }}>
+                    <Tag color={loopCount > 0 ? "processing" : "default"}>
+                      Loop: {loopCount}/{maxLoops}
+                    </Tag>
+                    {loopCount > 0 && (
+                      <Tag color={loopCount <= maxLoops ? "success" : "error"}>
+                        {loopCount <= maxLoops ? "进行中" : "已达上限"}
+                      </Tag>
+                    )}
+                  </Space>
+                  <Space wrap>
                   <Tooltip title={requirementsDoc ? "查看基础需求文档" : "请先保存智能体"}>
                     <Button
                       size="small"
@@ -1269,7 +1437,19 @@ const AgenticStudio: React.FC = () => {
                       下载文档
                     </Button>
                   </Tooltip>
+
+                  <Tooltip title={id ? "查看运行日志" : "请先保存智能体"}>
+                    <Button
+                      size="small"
+                      icon={<FileTextOutlined />}
+                      onClick={handleOpenLogDrawer}
+                      disabled={!id}
+                    >
+                      查看日志
+                    </Button>
+                  </Tooltip>
                 </Space>
+                </>
               }
             >
               {generatingDecomposition ? (
@@ -1676,6 +1856,58 @@ const AgenticStudio: React.FC = () => {
         </Form>
       </Modal>
 
+      {/* Default Input Configuration Modal */}
+      <Modal
+        title={`配置默认值 - ${currentInputField?.label || ''}`}
+        open={defaultInputModalVisible}
+        onOk={handleDefaultInputOk}
+        onCancel={() => {
+          setDefaultInputModalVisible(false);
+          defaultInputForm.resetFields();
+          setCurrentInputField(null);
+        }}
+        width={600}
+      >
+        <Form form={defaultInputForm} layout="vertical">
+          <Alert
+            message="配置此输入字段的默认值"
+            description="在自动运行智能体时，将使用此默认值作为输入参数。"
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+          />
+
+          <Form.Item label="字段名称">
+            <Input value={currentInputField?.name} disabled />
+          </Form.Item>
+
+          <Form.Item label="字段类型">
+            <Input value={currentInputField?.type} disabled />
+          </Form.Item>
+
+          <Form.Item
+            name="default_value"
+            label="默认值"
+            rules={[{ required: true, message: '请输入默认值' }]}
+            extra="此值将在自动运行智能体时作为输入参数"
+          >
+            {currentInputField?.type === 'textarea' ? (
+              <TextArea
+                rows={4}
+                placeholder="请输入默认值..."
+              />
+            ) : currentInputField?.type === 'number' ? (
+              <InputNumber
+                style={{ width: '100%' }}
+                placeholder="请输入默认值..."
+              />
+            ) : (
+              <Input placeholder="请输入默认值..." />
+            )}
+          </Form.Item>
+        </Form>
+      </Modal>
+
       {/* Agent Run Modal */}
       <Modal
         title="运行智能体"
@@ -1764,6 +1996,64 @@ const AgenticStudio: React.FC = () => {
           )}
         </div>
       </Modal>
+
+      {/* Process Log Drawer */}
+      <Drawer
+        title="运行日志"
+        placement="right"
+        size="large"
+        open={logDrawerVisible}
+        onClose={() => setLogDrawerVisible(false)}
+        extra={
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={handleFetchLogs}
+            loading={loadingLogs}
+          >
+            刷新
+          </Button>
+        }
+      >
+        <Spin spinning={loadingLogs}>
+          {agentLogs.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: '40px 0', color: '#999' }}>
+              暂无日志记录
+            </div>
+          ) : (
+            <Timeline
+              mode="left"
+              items={agentLogs.map((log, index) => ({
+                label: new Date(log.created_at).toLocaleTimeString('zh-CN'),
+                color: log.status === 'success' ? 'green' : log.status === 'error' ? 'red' : 'blue',
+                dot: log.status === 'running' ? <LoadingOutlined /> : undefined,
+                children: (
+                  <div key={log.id}>
+                    <div style={{ fontWeight: 500, marginBottom: 4 }}>
+                      <Tag color={
+                        log.stage === 'code_generation' ? 'purple' :
+                        log.stage === 'venv_setup' ? 'cyan' :
+                        log.stage === 'running' ? 'blue' :
+                        log.stage === 'fixing' ? 'orange' : 'default'
+                      }>
+                        {log.stage}
+                      </Tag>
+                      <Tag color={log.status === 'success' ? 'success' : log.status === 'error' ? 'error' : 'processing'}>
+                        {log.status}
+                      </Tag>
+                      <span style={{ marginLeft: 8, fontSize: 12, color: '#666' }}>
+                        Loop {log.loop_count + 1}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: '#333', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                      {log.message}
+                    </div>
+                  </div>
+                )
+              }))}
+            />
+          )}
+        </Spin>
+      </Drawer>
     </div>
   );
 };

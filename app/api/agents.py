@@ -449,3 +449,450 @@ except Exception as e:
             status_code=500,
             detail=f"Agent run failed: {str(e)}"
         )
+
+
+class GenerateAndRunRequest(BaseModel):
+    """Request model for generate-and-run with loop-based fixing."""
+    agent_id: str
+    max_loops: int = 10
+
+
+@router.post("/generate-and-run")
+async def generate_and_run_agent(
+    request: GenerateAndRunRequest,
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Generate code, setup venv, and run agent with automatic loop-based fixing.
+
+    Process:
+    1. Generate code (or use existing)
+    2. Setup virtual environment
+    3. Run agent with default inputs
+    4. If failed, use LLM to fix code
+    5. Repeat 3-4 up to max_loops times
+    6. Return final result
+
+    All steps are logged to agent_run_log table.
+    """
+    from app.services.agent_workspace_service import AgentWorkspaceService
+    from app.services.ai_resource_service import AiResourceService
+    from app.models.agent_run_log import AgentRunLog
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from sqlalchemy import select
+
+    try:
+        # Get agent
+        agent_service = AgentService(session)
+        agent = await agent_service.get_agent(uuid.UUID(request.agent_id))
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
+
+        # Get config with io_config
+        from app.models.agent import AgentVersion
+        stmt = (
+            select(AgentVersion)
+            .where(AgentVersion.agent_id == agent.id)
+            .order_by(AgentVersion.version.desc())
+        )
+        result = await session.execute(stmt)
+        version = result.scalars().first()
+
+        if not version or not version.config:
+            raise HTTPException(
+                status_code=400,
+                detail="Agent has no configuration. Please save the agent first."
+            )
+
+        config = version.config
+        ai_resource_service = AiResourceService(session)
+
+        # Initialize workspace service
+        workspace_service = AgentWorkspaceService(session, str(agent.id), agent.name)
+
+        # Get default inputs from io_config
+        default_inputs = {}
+        io_config = config.get("io_config", {})
+        for input_field in io_config.get("inputs", []):
+            if input_field.get("default_value"):
+                default_inputs[input_field["name"]] = input_field["default_value"]
+
+        # Main loop
+        for loop_count in range(request.max_loops):
+            # Step 1: Generate code
+            session.add(AgentRunLog(
+                agent_id=agent.id,
+                loop_count=loop_count,
+                stage="code_generation",
+                status="running",
+                message=f"Starting code generation (Loop {loop_count + 1}/{request.max_loops})"
+            ))
+            await session.commit()
+
+            # Get decomposition doc (generate if not exists)
+            decomposition_doc = config.get("decomposition_doc")
+            if not decomposition_doc:
+                decomp_service = RequirementDecompositionService(session)
+                decomposition_doc = await decomp_service.decompose_requirements(
+                    agent_data={"name": agent.name, "description": agent.description},
+                    config=config
+                )
+                # Save to config
+                config["decomposition_doc"] = decomposition_doc
+
+            # Generate code
+            # First, enrich config with actual LLM credentials
+            thinking_model = config.get("model_thinking", "gpt-4")
+            summary_model = config.get("model_summary", "gpt-3.5-turbo")
+
+            # Get LLM resource details
+            for model_key, model_name in [("thinking", thinking_model), ("summary", summary_model)]:
+                llm_resource = await ai_resource_service.get_resource_by_name(model_name, "text_llm")
+                if llm_resource:
+                    config[f"llm_{model_key}_api_key"] = llm_resource.api_key or ""
+                    config[f"llm_{model_key}_base_url"] = llm_resource.endpoint or ""
+                    # Extract base URL without /chat/completions suffix
+                    base_url = llm_resource.endpoint or ""
+                    if base_url.endswith("/chat/completions"):
+                        base_url = base_url[:-17].rstrip("/")
+                    config[f"llm_{model_key}_base_url"] = base_url
+
+            generator = get_generator()
+            files = generator.generate_agent_code(
+                agent_name=agent.name,
+                agent_description=agent.description or "",
+                decomposition_doc=decomposition_doc,
+                config=config
+            )
+
+            # Save files
+            workspace_dir = workspace_service.workspace_dir
+            os.makedirs(workspace_dir, exist_ok=True)
+            for file_name, file_content in files.items():
+                file_path = os.path.join(workspace_dir, file_name)
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(file_content)
+
+            session.add(AgentRunLog(
+                agent_id=agent.id,
+                loop_count=loop_count,
+                stage="code_generation",
+                status="success",
+                message=f"Code generated successfully: {list(files.keys())}"
+            ))
+            await session.commit()
+
+            # Step 2: Setup venv (only on first loop or if venv doesn't exist)
+            import shutil
+            venv_dir = os.path.join(workspace_dir, "venv")
+            if loop_count == 0 or not os.path.exists(venv_dir):
+                # Delete existing venv to ensure fresh dependencies
+                if os.path.exists(venv_dir):
+                    session.add(AgentRunLog(
+                        agent_id=agent.id,
+                        loop_count=loop_count,
+                        stage="venv_setup",
+                        status="running",
+                        message=f"Removing old venv for fresh installation"
+                    ))
+                    await session.commit()
+                    try:
+                        shutil.rmtree(venv_dir)
+                    except Exception as e:
+                        pass  # Ignore errors
+
+                venv_result = await workspace_service.setup_virtual_environment(loop_count)
+                if not venv_result["success"]:
+                    session.add(AgentRunLog(
+                        agent_id=agent.id,
+                        loop_count=loop_count,
+                        stage="venv_setup",
+                        status="error",
+                        message=f"Venv setup failed: {venv_result['logs']}"
+                    ))
+                    await session.commit()
+                    return {
+                        "success": False,
+                        "loop_count": loop_count + 1,
+                        "error": "Failed to setup virtual environment",
+                        "logs": venv_result["logs"]
+                    }
+
+            # Step 3: Run agent
+            session.add(AgentRunLog(
+                agent_id=agent.id,
+                loop_count=loop_count,
+                stage="running",
+                status="running",
+                message=f"Running agent with inputs: {default_inputs}"
+            ))
+            await session.commit()
+
+            run_result = await _execute_agent(
+                workspace_dir=workspace_dir,
+                inputs=default_inputs,
+                session=session,
+                config=config
+            )
+
+            if run_result["success"]:
+                session.add(AgentRunLog(
+                    agent_id=agent.id,
+                    loop_count=loop_count,
+                    stage="running",
+                    status="success",
+                    message=f"Agent ran successfully: {run_result.get('outputs', {})}"
+                ))
+                await session.commit()
+
+                return {
+                    "success": True,
+                    "loop_count": loop_count + 1,
+                    "outputs": run_result.get("outputs", {}),
+                    "message": f"Agent completed successfully after {loop_count + 1} loop(s)"
+                }
+            else:
+                # Step 4: Fix code with LLM
+                error_message = run_result.get("error", "Unknown error")
+                session.add(AgentRunLog(
+                    agent_id=agent.id,
+                    loop_count=loop_count,
+                    stage="fixing",
+                    status="running",
+                    message=f"Agent failed, attempting fix:\n{error_message[:2000]}"
+                ))
+                await session.commit()
+
+                # Get LLM for fixing
+                thinking_model = config.get("model_thinking", "gpt-4")
+                llm_config = await ai_resource_service.get_resource_by_name(thinking_model, "text_llm")
+
+                if not llm_config:
+                    # Can't fix without LLM, return error
+                    session.add(AgentRunLog(
+                        agent_id=agent.id,
+                        loop_count=loop_count,
+                        stage="fixing",
+                        status="error",
+                        message=f"No LLM configured for fixing: {thinking_model}"
+                    ))
+                    await session.commit()
+                    break
+
+                # Use LLM to fix the code
+                fix_prompt = f"""The following agent code failed with an error. Please generate fixed code.
+
+**Error:**
+{error_message}
+
+**Original agent.py:**
+```python
+{files.get('agent.py', '')}
+```
+
+Generate the complete fixed agent.py code that addresses the error. Respond only with the code, no explanations.
+"""
+
+                try:
+                    # Clear proxy environment variables to avoid SOCKS proxy errors
+                    old_env = {}
+                    proxy_vars = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY']
+                    for var in proxy_vars:
+                        if var in os.environ:
+                            old_env[var] = os.environ[var]
+                            del os.environ[var]
+
+                    try:
+                        llm = ChatOpenAI(
+                            model=llm_config.config.get("model", thinking_model) if llm_config.config else thinking_model,
+                            openai_api_key=llm_config.api_key,
+                            openai_api_base=llm_config.endpoint,
+                            temperature=0.7
+                        )
+
+                        response = await llm.ainvoke([HumanMessage(content=fix_prompt)])
+                        fixed_code = response.content
+                    finally:
+                        # Restore proxy environment variables
+                        for var, val in old_env.items():
+                            os.environ[var] = val
+
+                    # Extract code from response
+                    if "```python" in fixed_code:
+                        fixed_code = fixed_code.split("```python")[1].split("```")[0].strip()
+                    elif "```" in fixed_code:
+                        fixed_code = fixed_code.split("```")[1].split("```")[0].strip()
+
+                    # Update the agent.py file
+                    agent_path = os.path.join(workspace_dir, "agent.py")
+                    with open(agent_path, 'w', encoding='utf-8') as f:
+                        f.write(fixed_code)
+
+                    session.add(AgentRunLog(
+                        agent_id=agent.id,
+                        loop_count=loop_count,
+                        stage="fixing",
+                        status="success",
+                        message="Code fixed by LLM, retrying..."
+                    ))
+                    await session.commit()
+
+                    # Continue to next loop iteration
+                    continue
+
+                except Exception as fix_error:
+                    session.add(AgentRunLog(
+                        agent_id=agent.id,
+                        loop_count=loop_count,
+                        stage="fixing",
+                        status="error",
+                        message=f"Failed to fix code: {str(fix_error)}"
+                    ))
+                    await session.commit()
+                    break
+
+        # Max loops reached
+        session.add(AgentRunLog(
+            agent_id=agent.id,
+            loop_count=request.max_loops - 1,
+            stage="running",
+            status="error",
+            message=f"Agent failed after {request.max_loops} loop attempts"
+        ))
+        await session.commit()
+
+        return {
+            "success": False,
+            "loop_count": request.max_loops,
+            "error": f"Agent failed after {request.max_loops} attempts",
+            "message": "Maximum loop count reached without success"
+        }
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"Error in generate_and_run_agent: {e}")
+        print(f"Traceback: {error_trace}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Generate-and-run failed: {str(e)}"
+        )
+
+
+async def _execute_agent(
+    workspace_dir: str,
+    inputs: Dict[str, Any],
+    session: AsyncSession,
+    config: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Helper function to execute agent code."""
+    import subprocess
+
+    # Convert to absolute path
+    workspace_dir = os.path.abspath(workspace_dir)
+
+    # Convert inputs dict to a string for the agent
+    # If inputs is empty or contains structured data, convert to JSON string
+    if not inputs:
+        user_input_str = '"Hello"'  # Default message when no input provided
+    elif len(inputs) == 1 and "message" in inputs:
+        # Single message input
+        user_input_str = json.dumps(inputs["message"], ensure_ascii=False)
+    else:
+        # Structured input, convert to JSON string
+        user_input_str = json.dumps(inputs, ensure_ascii=False)
+
+    run_script = f'''
+import sys
+import json
+import os
+
+sys.path.insert(0, "{workspace_dir}")
+
+# Clear proxy environment variables to avoid SOCKS proxy errors
+proxy_vars = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY', 'no_proxy', 'NO_PROXY']
+for var in proxy_vars:
+    os.environ.pop(var, None)
+
+os.environ["LLM_API_KEY"] = os.getenv("LLM_API_KEY", "")
+os.environ["LLM_BASE_URL"] = os.getenv("LLM_BASE_URL", "")
+
+from agent import create_agent
+
+agent = create_agent()
+user_input = {user_input_str}
+
+try:
+    result = agent.run(user_input)
+    print(json.dumps({{"success": True, "result": str(result)}}, ensure_ascii=False))
+except Exception as e:
+    print(json.dumps({{"success": False, "error": str(e)}}, ensure_ascii=False))
+'''
+
+    script_path = os.path.join(workspace_dir, "run_agent.py")
+    with open(script_path, "w") as f:
+        f.write(run_script)
+
+    # Clear proxy environment variables for subprocess
+    subprocess_env = {**os.environ, "PYTHONPATH": workspace_dir}
+    proxy_vars = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY', 'no_proxy', 'NO_PROXY']
+    for var in proxy_vars:
+        subprocess_env.pop(var, None)
+
+    result = subprocess.run(
+        ["python", "run_agent.py"],  # Use just filename, cwd handles the path
+        capture_output=True,
+        text=True,
+        timeout=300,
+        cwd=workspace_dir,
+        env=subprocess_env
+    )
+
+    if result.returncode != 0:
+        return {
+            "success": False,
+            "error": result.stderr or result.stdout
+        }
+
+    try:
+        output_data = json.loads(result.stdout.strip())
+        return output_data
+    except json.JSONDecodeError:
+        return {
+            "success": True,
+            "outputs": {"result": result.stdout}
+        }
+
+
+@router.get("/{agent_id}/logs")
+async def get_agent_logs(
+    agent_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session)
+):
+    """Get all logs for an agent."""
+    from sqlalchemy import select
+    from app.models.agent_run_log import AgentRunLog
+
+    stmt = (
+        select(AgentRunLog)
+        .where(AgentRunLog.agent_id == agent_id)
+        .order_by(AgentRunLog.created_at.desc())
+    )
+    result = await session.execute(stmt)
+    logs = result.scalars().all()
+
+    return {
+        "agent_id": str(agent_id),
+        "logs": [
+            {
+                "id": str(log.id),
+                "loop_count": log.loop_count,
+                "stage": log.stage,
+                "status": log.status,
+                "message": log.message,
+                "created_at": log.created_at.isoformat()
+            }
+            for log in logs
+        ]
+    }

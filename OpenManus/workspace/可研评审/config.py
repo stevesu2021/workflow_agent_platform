@@ -5,12 +5,19 @@ Configuration for 可研评审 Agent
 from dataclasses import dataclass
 from typing import Optional
 import os
+from pathlib import Path
+
+# Load .env file from the same directory as this file
+env_path = Path(__file__).parent / ".env"
+if env_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(env_path)
 
 
 @dataclass
 class LLMConfig:
     """LLM configuration."""
-    model: str = "mimo-v2-flash"
+    model: str = os.getenv("LLM_MODEL", "mimo-v2-flash")
     base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
     api_key: str = os.getenv("LLM_API_KEY", "")
     temperature: float = 0.7
@@ -48,3 +55,6 @@ class 可研评审Config:
 
 # Global config instance
 config = 可研评审Config()
+
+# Alias for backward compatibility
+AgentConfig = 可研评审Config

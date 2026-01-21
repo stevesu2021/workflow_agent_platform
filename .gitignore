@@ -3,3 +3,4 @@ volumes/etcd/member/snap/
 volumes/etcd/member/wal/
 .env
 */.env
+OpenManus/workspace/*

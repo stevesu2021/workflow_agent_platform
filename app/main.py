@@ -3,6 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.core.database import init_db
 from app.api import agents, runs, ai_resources, knowledge, tools, mcp
+# Import all models to ensure they are registered with SQLModel
+import app.models.agent
+import app.models.agent_run_log
+import app.models.ai_resource
+import app.models.knowledge
+import app.models.tool
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

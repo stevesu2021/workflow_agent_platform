@@ -3,19 +3,20 @@ import sys
 import json
 import os
 
-# Add workspace to path
-sys.path.insert(0, "./OpenManus/workspace/可研评审")
+sys.path.insert(0, "/home/steve/github/workflow_agent_platform/OpenManus/workspace/可研评审")
 
-# Set environment variables for LLM
+# Clear proxy environment variables to avoid SOCKS proxy errors
+proxy_vars = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY', 'no_proxy', 'NO_PROXY']
+for var in proxy_vars:
+    os.environ.pop(var, None)
+
 os.environ["LLM_API_KEY"] = os.getenv("LLM_API_KEY", "")
 os.environ["LLM_BASE_URL"] = os.getenv("LLM_BASE_URL", "")
 
-# Import and run agent
 from agent import create_agent
 
-# Run agent
 agent = create_agent()
-user_input = {"待评审的材料": {"uid": "rc-upload-1768815080460-7"}}
+user_input = "Hello"
 
 try:
     result = agent.run(user_input)

@@ -72,7 +72,10 @@ class OpenManusLangGraphGenerator:
         # 6. Requirements file
         files["requirements.txt"] = self._generate_requirements(config)
 
-        # 7. README
+        # 7. Environment file (.env)
+        files[".env"] = self._generate_env_file(agent_name, config)
+
+        # 8. README
         files["README.md"] = self._generate_readme(agent_name, agent_description, parsed_info)
 
         return files
@@ -181,13 +184,33 @@ class OpenManusLangGraphGenerator:
         nodes_code = []
         edges_code = []
 
-        # Generate node definitions
+        # Helper function to escape and truncate descriptions
+        def escape_desc(desc: str) -> str:
+            # Remove newlines and limit length
+            desc = desc.replace('\n', ' ').replace('\r', ' ').replace('"', "'")
+            # Truncate to reasonable length
+            if len(desc) > 100:
+                desc = desc[:97] + "..."
+            return desc
+
+        # Generate node definitions - register node functions directly
         for node in parsed_info.get("nodes", []):
-            nodes_code.append(f'    "{node["name"]}": AgentNode(name="{node["name"]}", description="{node["description"]}")')
+            safe_name = node["name"].replace("-", "_")
+            # Use 8 spaces for proper indentation inside _build_graph method
+            nodes_code.append(f'        graph.add_node("{node["name"]}", {safe_name})')
 
         # Generate edge definitions
         for edge in parsed_info.get("edges", []):
-            edges_code.append(f'    graph.add_edge("{edge["from"]}", "{edge["to"]}")')
+            # Use 8 spaces for proper indentation inside _build_graph method
+            edges_code.append(f'        graph.add_edge("{edge["from"]}", "{edge["to"]}")')
+
+        # Get entry point
+        entry_point = parsed_info.get("nodes", [{"name": "start"}])[0].get("name", "start")
+
+        # Get last node for END edge
+        last_node = parsed_info.get("nodes", [{"name": "start"}])[-1].get("name", "start")
+        if last_node != "END":
+            edges_code.append(f'        graph.add_edge("{last_node}", END)')
 
         code = f'''"""
 {agent_name} - OpenManus + LangGraph Agent
@@ -195,20 +218,43 @@ class OpenManusLangGraphGenerator:
 Generated from: {agent_description}
 """
 
-from typing import TypedDict, Annotated, Sequence, List
+from typing import TypedDict, Annotated, Sequence, List, Dict, Any
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
 import operator
+import sys
+import os
 
-from .config import AgentConfig
-from .nodes import *
-from .tools import get_tools
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    from .config import AgentConfig
+except ImportError:
+    from config import AgentConfig
+
+try:
+    from .nodes import *
+except ImportError:
+    try:
+        from nodes import *
+    except ImportError:
+        pass  # Nodes will be defined inline if needed
+
+try:
+    from .tools import get_tools
+except ImportError:
+    try:
+        from tools import get_tools
+    except ImportError:
+        def get_tools():
+            return []
 
 
 class AgentState(TypedDict):
     """State for the agent graph."""
-    messages: Annotated[Sequence[BaseMessage], operator.add_icon]
+    messages: Annotated[Sequence[BaseMessage], operator.add]
     current_step: str
     context: dict
     results: dict
@@ -231,14 +277,10 @@ class {self._to_class_name(sanitized_name)}Agent:
 {chr(10).join(nodes_code) if nodes_code else '    # Add your nodes here'}
 
         # Set entry point
-        entry_point = {parsed_info.get("nodes", [{}])[0].get("name", "start") if parsed_info.get("nodes") else "start"}
-        graph.set_entry_point(entry_point)
+        graph.set_entry_point("{entry_point}")
 
         # Add edges
 {chr(10).join(edges_code) if edges_code else '    # Add your edges here'}
-
-        # Set finish point
-        graph.set_finish_point(END)
 
         return graph.compile()
 
@@ -294,6 +336,8 @@ if __name__ == "__main__":
     ) -> str:
         """Generate configuration file."""
         sanitized_name = self._to_class_name(agent_name)
+        thinking_model = config.get("model_thinking", "gpt-4")
+        summary_model = config.get("model_summary", "gpt-3.5-turbo")
 
         code = f'''"""
 Configuration for {agent_name} Agent
@@ -302,12 +346,19 @@ Configuration for {agent_name} Agent
 from dataclasses import dataclass
 from typing import Optional
 import os
+from pathlib import Path
+
+# Load .env file from the same directory as this file
+env_path = Path(__file__).parent / ".env"
+if env_path.exists():
+    from dotenv import load_dotenv
+    load_dotenv(env_path)
 
 
 @dataclass
 class LLMConfig:
     """LLM configuration."""
-    model: str = "{config.get("model_thinking", "gpt-4")}"
+    model: str = os.getenv("LLM_MODEL", "{thinking_model}")
     base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
     api_key: str = os.getenv("LLM_API_KEY", "")
     temperature: float = 0.7
@@ -345,6 +396,9 @@ class {self._to_class_name(sanitized_name)}Config:
 
 # Global config instance
 config = {self._to_class_name(sanitized_name)}Config()
+
+# Alias for backward compatibility
+AgentConfig = {self._to_class_name(sanitized_name)}Config
 '''
         return code
 
@@ -365,7 +419,13 @@ def {node["name"]}(state: AgentState) -> dict:
     {node["description"]}
     """
     # Get LLM
-    from .config import config
+    try:
+        from .config import config
+    except ImportError:
+        from config import config
+
+    # Use base_url for newer langchain-openai versions (0.2.0+)
+    # The base_url should include /chat/completions
     llm = ChatOpenAI(
         model=config.llm.model,
         base_url=config.llm.base_url,
@@ -406,8 +466,26 @@ Agent Nodes Implementation
 Each node represents a step in the LangGraph workflow.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, TypedDict, Annotated, Sequence
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import BaseMessage
+import operator
+
+# Try to import AgentState from agent module, otherwise define it locally
+try:
+    from .agent import AgentState
+except ImportError:
+    try:
+        from agent import AgentState
+    except ImportError:
+        # Define AgentState locally if import fails
+        class AgentState(TypedDict):
+            """State for the agent graph."""
+            messages: Annotated[Sequence[BaseMessage], operator.add]
+            current_step: str
+            context: dict
+            results: dict
+            user_input: str
 
 
 class AgentNode:
@@ -499,15 +577,81 @@ def get_tools() -> list:
 
     def _generate_requirements(self, config: Dict[str, Any]) -> str:
         """Generate requirements.txt file."""
-        return '''langchain>=0.1.0
-langchain-openai>=0.0.5
-langgraph>=0.0.20
-langchain-core>=0.1.0
+        return '''langchain>=1.0
+langchain-openai>=0.2.0
+langgraph>=1.0
+langchain-core>=1.0
 pydantic>=2.0.0
-httpx>=0.24.0
+httpx[socks]>=0.24.0
 aiohttp>=3.8.0
 python-dotenv>=1.0.0
 '''
+
+    def _generate_env_file(self, agent_name: str, config: Dict[str, Any]) -> str:
+        """Generate .env file with environment variables."""
+        lines = []
+        lines.append(f"# {agent_name} - Environment Configuration")
+        lines.append(f"# Generated at: {self._get_current_time()}")
+        lines.append("")
+        lines.append("# LLM Configuration")
+        lines.append("# Thinking Model (for complex reasoning)")
+
+        # Ensure base_url includes /chat/completions for langchain-openai
+        thinking_base_url = config.get('llm_thinking_base_url', '')
+        if thinking_base_url and not thinking_base_url.endswith('/chat/completions'):
+            thinking_base_url = thinking_base_url.rstrip('/') + '/chat/completions'
+
+        lines.append(f"LLM_API_KEY={config.get('llm_thinking_api_key', '')}")
+        lines.append(f"LLM_BASE_URL={thinking_base_url}")
+        lines.append(f"LLM_MODEL={config.get('model_thinking', '')}")
+        lines.append("")
+
+        # Summary Model
+        lines.append("# Summary Model (for quick tasks)")
+        summary_base_url = config.get('llm_summary_base_url', '')
+        if summary_base_url and not summary_base_url.endswith('/chat/completions'):
+            summary_base_url = summary_base_url.rstrip('/') + '/chat/completions'
+
+        lines.append(f"LLM_SUMMARY_API_KEY={config.get('llm_summary_api_key', '')}")
+        lines.append(f"LLM_SUMMARY_BASE_URL={summary_base_url}")
+        lines.append(f"LLM_SUMMARY_MODEL={config.get('model_summary', '')}")
+        lines.append("")
+
+        # Knowledge Base configuration
+        if config.get("knowledge_bases"):
+            lines.append("# Knowledge Base Configuration")
+            lines.append("KB_BASE_URL=http://localhost:8001")
+            lines.append(f"KNOWLEDGE_BASES={','.join(config['knowledge_bases'])}")
+            lines.append("")
+
+        # Tool configuration
+        if config.get("tools"):
+            lines.append("# Tool Configuration")
+            lines.append(f"TOOLS={','.join(config['tools'])}")
+            lines.append("")
+
+        # Additional environment variables
+        lines.append("# Additional Configuration")
+        lines.append("MAX_THOUGHTS=" + str(config.get("max_thoughts", 5)))
+        lines.append("")
+
+        lines.append("# MinIO Configuration (if using object storage)")
+        lines.append("MINIO_ENDPOINT=localhost:9000")
+        lines.append("MINIO_ACCESS_KEY=minioadmin")
+        lines.append("MINIO_SECRET_KEY=minioadmin")
+        lines.append("")
+
+        lines.append("# Milvus Configuration (if using vector database)")
+        lines.append("MILVUS_HOST=localhost")
+        lines.append("MILVUS_PORT=19530")
+        lines.append("")
+
+        return '\n'.join(lines)
+
+    def _get_current_time(self) -> str:
+        """Get current timestamp as string."""
+        from datetime import datetime
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
     def _generate_readme(
         self,

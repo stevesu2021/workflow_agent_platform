@@ -4,8 +4,26 @@ Agent Nodes Implementation
 Each node represents a step in the LangGraph workflow.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, TypedDict, Annotated, Sequence
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import BaseMessage
+import operator
+
+# Try to import AgentState from agent module, otherwise define it locally
+try:
+    from .agent import AgentState
+except ImportError:
+    try:
+        from agent import AgentState
+    except ImportError:
+        # Define AgentState locally if import fails
+        class AgentState(TypedDict):
+            """State for the agent graph."""
+            messages: Annotated[Sequence[BaseMessage], operator.add]
+            current_step: str
+            context: dict
+            results: dict
+            user_input: str
 
 
 class AgentNode:
@@ -42,7 +60,13 @@ def step_1(state: AgentState) -> dict:
   ```
     """
     # Get LLM
-    from .config import config
+    try:
+        from .config import config
+    except ImportError:
+        from config import config
+
+    # Use base_url for newer langchain-openai versions (0.2.0+)
+    # The base_url should include /chat/completions
     llm = ChatOpenAI(
         model=config.llm.model,
         base_url=config.llm.base_url,
@@ -89,7 +113,13 @@ def step_2(state: AgentState) -> dict:
   ```
     """
     # Get LLM
-    from .config import config
+    try:
+        from .config import config
+    except ImportError:
+        from config import config
+
+    # Use base_url for newer langchain-openai versions (0.2.0+)
+    # The base_url should include /chat/completions
     llm = ChatOpenAI(
         model=config.llm.model,
         base_url=config.llm.base_url,
@@ -135,7 +165,13 @@ def step_3(state: AgentState) -> dict:
   ```
     """
     # Get LLM
-    from .config import config
+    try:
+        from .config import config
+    except ImportError:
+        from config import config
+
+    # Use base_url for newer langchain-openai versions (0.2.0+)
+    # The base_url should include /chat/completions
     llm = ChatOpenAI(
         model=config.llm.model,
         base_url=config.llm.base_url,
@@ -182,7 +218,13 @@ def step_4(state: AgentState) -> dict:
   ```
     """
     # Get LLM
-    from .config import config
+    try:
+        from .config import config
+    except ImportError:
+        from config import config
+
+    # Use base_url for newer langchain-openai versions (0.2.0+)
+    # The base_url should include /chat/completions
     llm = ChatOpenAI(
         model=config.llm.model,
         base_url=config.llm.base_url,
@@ -243,7 +285,13 @@ def step_5(state: AgentState) -> dict:
   ```
     """
     # Get LLM
-    from .config import config
+    try:
+        from .config import config
+    except ImportError:
+        from config import config
+
+    # Use base_url for newer langchain-openai versions (0.2.0+)
+    # The base_url should include /chat/completions
     llm = ChatOpenAI(
         model=config.llm.model,
         base_url=config.llm.base_url,
@@ -297,7 +345,13 @@ def step_6(state: AgentState) -> dict:
   ```
     """
     # Get LLM
-    from .config import config
+    try:
+        from .config import config
+    except ImportError:
+        from config import config
+
+    # Use base_url for newer langchain-openai versions (0.2.0+)
+    # The base_url should include /chat/completions
     llm = ChatOpenAI(
         model=config.llm.model,
         base_url=config.llm.base_url,
@@ -349,7 +403,13 @@ def step_7(state: AgentState) -> dict:
   ```
     """
     # Get LLM
-    from .config import config
+    try:
+        from .config import config
+    except ImportError:
+        from config import config
+
+    # Use base_url for newer langchain-openai versions (0.2.0+)
+    # The base_url should include /chat/completions
     llm = ChatOpenAI(
         model=config.llm.model,
         base_url=config.llm.base_url,
