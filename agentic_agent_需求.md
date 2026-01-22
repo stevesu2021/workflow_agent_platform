@@ -6,3 +6,11 @@
 另外生成的代码的版本要求：
 langchain >= 1.0
 langgraph >= 1.0
+
+在自动生成代码环节，还需要考虑到“Resource Attachments”的内容和“IO Configuration”的内容。
+代码中需要将“Resource Attachments”的内容加载并提前处理；
+代码中，“IO Configuration”的内容的Inputs部分，作为运行代码的输入参数处理。
+还需要提供一个入口，用于配置一个default的input，为自动生成代码/自动运行和修复代码的完整测试用例。
+还需要提供一个入口用于展现“IO Configuration”的内容的Ouputs部分的内容。
+代码生成完后，要把“运行代码”按钮点亮，由用户提交真实的“IO Configuration”的内容的Inputs部分进行用户自己的debug。
+

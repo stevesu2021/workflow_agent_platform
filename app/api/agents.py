@@ -704,10 +704,16 @@ Generate the complete fixed agent.py code that addresses the error. Respond only
                             del os.environ[var]
 
                     try:
+                        # Prepare base_url - remove /chat/completions suffix if present
+                        # ChatOpenAI will automatically add it
+                        base_url = llm_config.endpoint or ""
+                        if base_url and base_url.endswith("/chat/completions"):
+                            base_url = base_url[:-17].rstrip("/")
+
                         llm = ChatOpenAI(
                             model=llm_config.config.get("model", thinking_model) if llm_config.config else thinking_model,
-                            openai_api_key=llm_config.api_key,
-                            openai_api_base=llm_config.endpoint,
+                            api_key=llm_config.api_key,
+                            base_url=base_url,
                             temperature=0.7
                         )
 
@@ -815,8 +821,14 @@ proxy_vars = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_pro
 for var in proxy_vars:
     os.environ.pop(var, None)
 
-os.environ["LLM_API_KEY"] = os.getenv("LLM_API_KEY", "")
-os.environ["LLM_BASE_URL"] = os.getenv("LLM_BASE_URL", "")
+# Load .env file from workspace directory
+env_file = os.path.join("{workspace_dir}", ".env")
+if os.path.exists(env_file):
+    from dotenv import load_dotenv
+    load_dotenv(env_file)
+    print("Loaded .env from:", env_file, file=sys.stderr)
+else:
+    print("Warning: .env file not found at:", env_file, file=sys.stderr)
 
 from agent import create_agent
 

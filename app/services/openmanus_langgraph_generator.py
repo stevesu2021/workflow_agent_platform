@@ -101,23 +101,46 @@ class OpenManusLangGraphGenerator:
             "models": {}
         }
 
-        # Extract task steps
-        task_pattern = r'(?:步骤|Step)\s*(\d+)[:\s]+(.*?)(?=(?:步骤|Step)|\Z|#{2,})'
+        # Extract task steps - support both formats:
+        # - ### 步骤1：文件解析
+        # - Step 1: File parsing
+        task_pattern = r'(?:#+\s*)?(?:步骤|Step)\s*(\d+)[:\s\：]+(.*?)(?=\n|$|#+|步骤|Step)'
         steps = re.findall(task_pattern, decomposition_doc, re.IGNORECASE | re.DOTALL)
         for step_num, step_desc in steps:
+            clean_desc = step_desc.strip().rstrip(')')  # Remove trailing ) from format like "文件解析)"
             parsed["task_steps"].append({
                 "order": int(step_num),
-                "description": step_desc.strip()
+                "description": clean_desc
             })
 
-        # Extract nodes (LangGraph nodes)
-        node_pattern = r'(?:节点|Node)[\s\:：]+([A-Za-z_][A-Za-z0-9_]*)[:\s]+(.*?)(?=(?:节点|Node)|\Z|#{2,}|(?:边|Edge))'
-        nodes = re.findall(node_pattern, decomposition_doc, re.IGNORECASE | re.DOTALL)
-        for node_name, node_desc in nodes:
-            parsed["nodes"].append({
-                "name": node_name,
-                "description": node_desc.strip()
-            })
+        # Extract nodes (LangGraph nodes) - support multiple formats:
+        # - #### 节点1：文件解析节点 (parse_pdf) - with English name in parentheses
+        # - #### 节点1：文件解析节点 - without English name
+        # - Node: parse_pdf - File parsing - old format
+        # Also match from task steps if no explicit nodes found
+
+        # First try to find nodes with English names in parentheses
+        node_pattern_with_name = r'#+\s*节点\d+[:\：][^()]*\(([A-Za-z_][A-Za-z0-9_]*)\)'
+        nodes = re.findall(node_pattern_with_name, decomposition_doc, re.IGNORECASE)
+        for node_name in nodes:
+            if node_name and not any(n["name"] == node_name for n in parsed["nodes"]):
+                parsed["nodes"].append({
+                    "name": node_name,
+                    "description": node_name.replace("_", " ").title()
+                })
+
+        # If no nodes found, try old format
+        if not parsed["nodes"]:
+            node_pattern_old = r'(?:节点|Node)[\s\:：]+([A-Za-z_][A-Za-z0-9_]*)[:\s\-]+(.*?)(?=\n|#+|节点|Node|$)'
+            nodes = re.findall(node_pattern_old, decomposition_doc, re.IGNORECASE)
+            for match in nodes:
+                node_name = match[0]
+                node_desc = match[1].strip() if match[1] else ""
+                if node_name and not any(n["name"] == node_name for n in parsed["nodes"]):
+                    parsed["nodes"].append({
+                        "name": node_name,
+                        "description": node_desc
+                    })
 
         # Extract edges (transitions)
         edge_pattern = r'(?:边|Edge|Transition)[\s\:：]+([A-Za-z_][A-Za-z0-9_]*)\s*->\s*([A-Za-z_][A-Za-z0-9_]*)'
@@ -205,10 +228,13 @@ class OpenManusLangGraphGenerator:
             edges_code.append(f'        graph.add_edge("{edge["from"]}", "{edge["to"]}")')
 
         # Get entry point
-        entry_point = parsed_info.get("nodes", [{"name": "start"}])[0].get("name", "start")
+        nodes_list = parsed_info.get("nodes", [])
+        if not nodes_list:
+            nodes_list = [{"name": "start"}]
+        entry_point = nodes_list[0].get("name", "start")
 
         # Get last node for END edge
-        last_node = parsed_info.get("nodes", [{"name": "start"}])[-1].get("name", "start")
+        last_node = nodes_list[-1].get("name", "start")
         if last_node != "END":
             edges_code.append(f'        graph.add_edge("{last_node}", END)')
 
@@ -357,12 +383,22 @@ if env_path.exists():
 
 @dataclass
 class LLMConfig:
-    """LLM configuration."""
+    """LLM configuration for thinking model (complex reasoning)."""
     model: str = os.getenv("LLM_MODEL", "{thinking_model}")
     base_url: str = os.getenv("LLM_BASE_URL", "https://api.openai.com/v1")
     api_key: str = os.getenv("LLM_API_KEY", "")
     temperature: float = 0.7
     max_tokens: int = 4096
+
+
+@dataclass
+class SummaryLLMConfig:
+    """LLM configuration for summary model (quick tasks)."""
+    model: str = os.getenv("LLM_SUMMARY_MODEL", "{summary_model}")
+    base_url: str = os.getenv("LLM_SUMMARY_BASE_URL", "https://api.openai.com/v1")
+    api_key: str = os.getenv("LLM_SUMMARY_API_KEY", "")
+    temperature: float = 0.3
+    max_tokens: int = 2048
 
 
 @dataclass
@@ -378,18 +414,44 @@ class KnowledgeBaseConfig:
 
 
 @dataclass
+class MinIOConfig:
+    """MinIO object storage configuration."""
+    endpoint: str = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+    access_key: str = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+    secret_key: str = os.getenv("MINIO_SECRET_KEY", "minioadmin")
+    bucket: str = os.getenv("MINIO_BUCKET", "agentflow-data")
+    secure: bool = os.getenv("MINIO_SECURE", "false").lower() == "true"
+
+
+@dataclass
+class MilvusConfig:
+    """Milvus vector database configuration."""
+    host: str = os.getenv("MILVUS_HOST", "localhost")
+    port: int = int(os.getenv("MILVUS_PORT", "19530"))
+
+
+@dataclass
 class {self._to_class_name(sanitized_name)}Config:
     """Main configuration for {agent_name} agent."""
     llm: LLMConfig = None
+    summary_llm: SummaryLLMConfig = None
     knowledge_base: KnowledgeBaseConfig = None
+    minio: MinIOConfig = None
+    milvus: MilvusConfig = None
     max_thoughts: int = {config.get("max_thoughts", 5)}
     tools: list = None
 
     def __post_init__(self):
         if self.llm is None:
             self.llm = LLMConfig()
+        if self.summary_llm is None:
+            self.summary_llm = SummaryLLMConfig()
         if self.knowledge_base is None:
             self.knowledge_base = KnowledgeBaseConfig()
+        if self.minio is None:
+            self.minio = MinIOConfig()
+        if self.milvus is None:
+            self.milvus = MilvusConfig()
         if self.tools is None:
             self.tools = {config.get("tools", [])}
 
@@ -409,43 +471,15 @@ AgentConfig = {self._to_class_name(sanitized_name)}Config
     ) -> str:
         """Generate nodes implementation file."""
         nodes_code = []
+        has_knowledge_base = len(config.get("knowledge_bases", [])) > 0
 
         for i, node in enumerate(parsed_info.get("nodes", [])):
-            node_code = f'''
-def {node["name"]}(state: AgentState) -> dict:
-    """
-    Node: {node["name"]}
+            node_name = node["name"]
+            node_desc = node.get("description", "")
 
-    {node["description"]}
-    """
-    # Get LLM
-    try:
-        from .config import config
-    except ImportError:
-        from config import config
-
-    # Use base_url for newer langchain-openai versions (0.2.0+)
-    # The base_url should include /chat/completions
-    llm = ChatOpenAI(
-        model=config.llm.model,
-        base_url=config.llm.base_url,
-        api_key=config.llm.api_key,
-        temperature=config.llm.temperature
-    )
-
-    # Process with LLM
-    messages = state["messages"]
-    response = llm.invoke(messages)
-
-    return {{
-        "messages": [response],
-        "current_step": "{node["name"]}",
-        "results": {{
-            **state.get("results", {{}}),
-            "{node["name"]}": response.content
-        }}
-    }}
-'''
+            # Detect node type to determine which LLM and services to use
+            node_type = self._detect_node_type(node_name, node_desc)
+            node_code = self._generate_node_code(node_name, node_desc, node_type, has_knowledge_base)
             nodes_code.append(node_code)
 
         if not nodes_code:
@@ -468,7 +502,7 @@ Each node represents a step in the LangGraph workflow.
 
 from typing import Dict, Any, TypedDict, Annotated, Sequence
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 import operator
 
 # Try to import AgentState from agent module, otherwise define it locally
@@ -503,6 +537,141 @@ class AgentNode:
 # Node implementations
 {chr(10).join(nodes_code) if nodes_code else "# Add your node implementations here"}
 '''
+        return code
+
+    def _detect_node_type(self, node_name: str, node_desc: str) -> str:
+        """
+        Detect the type of node based on name and description.
+        Returns: 'thinking', 'summary', 'kb_retrieval', 'file_processing', or 'default'
+        """
+        name_lower = node_name.lower()
+        desc_lower = node_desc.lower()
+
+        # File processing nodes
+        if any(keyword in name_lower or keyword in desc_lower for keyword in
+               ['pdf', 'excel', '文件', '解析', 'parse', 'extract', 'read']):
+            return 'file_processing'
+
+        # Knowledge base retrieval nodes
+        if any(keyword in name_lower or keyword in desc_lower for keyword in
+               ['检索', '搜索', 'kb', 'knowledge', 'retriev', 'search', 'match']):
+            return 'kb_retrieval'
+
+        # Summary/formatting nodes
+        if any(keyword in name_lower or keyword in desc_lower for keyword in
+               ['汇总', '总结', '格式化', '输出', 'summary', 'summarize', 'format', 'output', 'report']):
+            return 'summary'
+
+        # Default to thinking for complex reasoning
+        return 'thinking'
+
+    def _generate_node_code(self, node_name: str, node_desc: str, node_type: str, has_kb: bool) -> str:
+        """Generate code for a single node based on its type."""
+
+        # Determine which LLM config to use
+        if node_type == 'summary':
+            llm_config_ref = "config.summary_llm"
+            llm_comment = "# Use summary model for quick tasks"
+        else:
+            llm_config_ref = "config.llm"
+            llm_comment = "# Use thinking model for complex reasoning"
+
+        # Base node code template
+        code = f'''
+def {node_name}(state: AgentState) -> dict:
+    """
+    Node: {node_name}
+
+    {node_desc}
+    """
+    try:
+        from .config import config
+    except ImportError:
+        from config import config
+
+    {llm_comment}
+    llm = ChatOpenAI(
+        model={llm_config_ref}.model,
+        base_url={llm_config_ref}.base_url,
+        api_key={llm_config_ref}.api_key,
+        temperature={llm_config_ref}.temperature
+    )
+
+'''
+
+        # Add service-specific code
+        if node_type == 'kb_retrieval' and has_kb:
+            code += f'''    # Knowledge base retrieval
+    if config.knowledge_base.enabled and config.knowledge_base.knowledge_bases:
+        import requests
+        kb_results = []
+        for kb_id in config.knowledge_base.knowledge_bases:
+            try:
+                response = requests.post(
+                    f"{{config.knowledge_base.base_url}}/knowledge-bases/{{kb_id}}/query",
+                    json={{"query": state.get("user_input", "")}},
+                    timeout=30
+                )
+                if response.status_code == 200:
+                    kb_results.append(response.json())
+            except Exception as e:
+                print(f"KB query failed: {{e}}")
+
+        context_kb = "\\n\\n".join([str(r) for r in kb_results])
+    else:
+        context_kb = ""
+
+'''
+
+        elif node_type == 'file_processing':
+            code += '''    # File processing utilities
+    import os
+    import pandas as pd
+
+    # Extract file info from context if available
+    file_path = state.get("context", {}).get("file_path", "")
+    if file_path and os.path.exists(file_path):
+        if file_path.endswith(('.xlsx', '.xls')):
+            # Read Excel file
+            data = pd.read_excel(file_path)
+            file_content = data.to_string()
+        elif file_path.endswith('.pdf'):
+            # Read PDF file
+            import PyPDF2
+            with open(file_path, 'rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                file_content = "\\n".join([page.extract_text() for page in reader.pages])
+        else:
+            file_content = "Unsupported file type"
+    else:
+        file_content = "No file provided"
+
+'''
+
+        # Common LLM processing code
+        if node_type == 'kb_retrieval' and has_kb:
+            prompt = f'state.get("user_input", "") + "\\n\\nContext from knowledge base:\\n" + context_kb'
+        elif node_type == 'file_processing':
+            prompt = 'state.get("user_input", "") + "\\n\\nFile content:\\n" + file_content'
+        else:
+            prompt = 'state.get("user_input", "")'
+
+        code += f'''    # Prepare messages with context
+    messages = state["messages"] + [HumanMessage(content={prompt})]
+
+    # Process with LLM
+    response = llm.invoke(messages)
+
+    return {{
+        "messages": [response],
+        "current_step": "{node_name}",
+        "results": {{
+            **state.get("results", {{}}),
+            "{node_name}": response.content
+        }}
+    }}
+'''
+
         return code
 
     def _generate_tools(
@@ -585,6 +754,12 @@ pydantic>=2.0.0
 httpx[socks]>=0.24.0
 aiohttp>=3.8.0
 python-dotenv>=1.0.0
+# File processing
+pandas>=2.0.0
+openpyxl>=3.0.0
+PyPDF2>=3.0.0
+# Knowledge base
+requests>=2.28.0
 '''
 
     def _generate_env_file(self, agent_name: str, config: Dict[str, Any]) -> str:
@@ -595,11 +770,13 @@ python-dotenv>=1.0.0
         lines.append("")
         lines.append("# LLM Configuration")
         lines.append("# Thinking Model (for complex reasoning)")
+        lines.append("# Note: ChatOpenAI will automatically append /chat/completions to the base_url")
 
-        # Ensure base_url includes /chat/completions for langchain-openai
+        # Get base_url without /chat/completions suffix
+        # ChatOpenAI will automatically add it
         thinking_base_url = config.get('llm_thinking_base_url', '')
-        if thinking_base_url and not thinking_base_url.endswith('/chat/completions'):
-            thinking_base_url = thinking_base_url.rstrip('/') + '/chat/completions'
+        if thinking_base_url and thinking_base_url.endswith('/chat/completions'):
+            thinking_base_url = thinking_base_url[:-17].rstrip('/')
 
         lines.append(f"LLM_API_KEY={config.get('llm_thinking_api_key', '')}")
         lines.append(f"LLM_BASE_URL={thinking_base_url}")
@@ -609,8 +786,8 @@ python-dotenv>=1.0.0
         # Summary Model
         lines.append("# Summary Model (for quick tasks)")
         summary_base_url = config.get('llm_summary_base_url', '')
-        if summary_base_url and not summary_base_url.endswith('/chat/completions'):
-            summary_base_url = summary_base_url.rstrip('/') + '/chat/completions'
+        if summary_base_url and summary_base_url.endswith('/chat/completions'):
+            summary_base_url = summary_base_url[:-17].rstrip('/')
 
         lines.append(f"LLM_SUMMARY_API_KEY={config.get('llm_summary_api_key', '')}")
         lines.append(f"LLM_SUMMARY_BASE_URL={summary_base_url}")
