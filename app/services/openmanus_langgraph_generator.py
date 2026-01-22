@@ -312,12 +312,32 @@ class {self._to_class_name(sanitized_name)}Agent:
 
     def run(self, user_input: str) -> dict:
         """Run the agent with user input."""
+        # Handle different input types
+        import json
+        # If user_input is a dict (from file uploads), convert to description
+        if isinstance(user_input, dict):
+            # Convert dict input to a descriptive message
+            input_parts = []
+            for key, value in user_input.items():
+                if isinstance(value, dict) and "name" in value:
+                    input_parts.append(f"{{key}}: 文件 '{{value.get('name', '未知文件')}}' 已上传")
+                elif isinstance(value, str):
+                    input_parts.append(f"{{key}}: {{value}}")
+                else:
+                    input_parts.append(f"{{key}}: {{str(value)}}")
+            user_input_str = "\\n".join(input_parts) if input_parts else "请开始处理"
+        else:
+            user_input_str = str(user_input) if not isinstance(user_input, str) else user_input
+
         initial_state = {{
-            "messages": [HumanMessage(content=user_input)],
+            "messages": [HumanMessage(content=user_input_str)],
             "current_step": "start",
-            "context": {{}},
+            "context": {{
+                # Store original input for reference
+                "raw_input": user_input
+            }},
             "results": {{}},
-            "user_input": user_input
+            "user_input": user_input_str
         }}
 
         result = self.graph.invoke(initial_state)
@@ -325,12 +345,29 @@ class {self._to_class_name(sanitized_name)}Agent:
 
     async def astream_run(self, user_input: str):
         """Async stream the agent execution."""
+        # Handle different input types (same logic as run method)
+        import json
+        if isinstance(user_input, dict):
+            input_parts = []
+            for key, value in user_input.items():
+                if isinstance(value, dict) and "name" in value:
+                    input_parts.append(f"{{key}}: 文件 '{{value.get('name', '未知文件')}}' 已上传")
+                elif isinstance(value, str):
+                    input_parts.append(f"{{key}}: {{value}}")
+                else:
+                    input_parts.append(f"{{key}}: {{str(value)}}")
+            user_input_str = "\\n".join(input_parts) if input_parts else "请开始处理"
+        else:
+            user_input_str = str(user_input) if not isinstance(user_input, str) else user_input
+
         initial_state = {{
-            "messages": [HumanMessage(content=user_input)],
+            "messages": [HumanMessage(content=user_input_str)],
             "current_step": "start",
-            "context": {{}},
+            "context": {{
+                "raw_input": user_input
+            }},
             "results": {{}},
-            "user_input": user_input
+            "user_input": user_input_str
         }}
 
         async for event in self.graph.astream(initial_state):
@@ -431,6 +468,16 @@ class MilvusConfig:
 
 
 @dataclass
+class ResourceFileConfig:
+    """Resource file configuration."""
+    files: list = None  # List of dicts with keys: name, path, type
+
+    def __post_init__(self):
+        if self.files is None:
+            self.files = []
+
+
+@dataclass
 class {self._to_class_name(sanitized_name)}Config:
     """Main configuration for {agent_name} agent."""
     llm: LLMConfig = None
@@ -438,6 +485,7 @@ class {self._to_class_name(sanitized_name)}Config:
     knowledge_base: KnowledgeBaseConfig = None
     minio: MinIOConfig = None
     milvus: MilvusConfig = None
+    resources: ResourceFileConfig = None
     max_thoughts: int = {config.get("max_thoughts", 5)}
     tools: list = None
 
@@ -452,12 +500,28 @@ class {self._to_class_name(sanitized_name)}Config:
             self.minio = MinIOConfig()
         if self.milvus is None:
             self.milvus = MilvusConfig()
+        if self.resources is None:
+            self.resources = ResourceFileConfig()
         if self.tools is None:
             self.tools = {config.get("tools", [])}
 
 
 # Global config instance
 config = {self._to_class_name(sanitized_name)}Config()
+
+# Initialize resource files
+_resource_files = {config.get("resource_files", [])}
+if _resource_files:
+    import os
+    _resources_dir = os.path.join(os.path.dirname(__file__), "resources")
+    config.resources.files = []
+    for rf in _resource_files:
+        config.resources.files.append({{
+            "name": rf.get("name", ""),
+            "type": rf.get("type", "unknown"),
+            "path": os.path.join(_resources_dir, rf.get("name", "")),
+            "original_name": rf.get("name", "")
+        }})
 
 # Alias for backward compatibility
 AgentConfig = {self._to_class_name(sanitized_name)}Config
@@ -657,7 +721,16 @@ def {node_name}(state: AgentState) -> dict:
             prompt = 'state.get("user_input", "")'
 
         code += f'''    # Prepare messages with context
-    messages = state["messages"] + [HumanMessage(content={prompt})]
+    # Check if there's file info in context that needs to be mentioned
+    context_raw = state.get("context", {{}})
+    file_info_msg = ""
+    if context_raw.get("raw_input") and isinstance(context_raw.get("raw_input"), dict):
+        # There's a file upload in the input
+        for key, value in context_raw.get("raw_input").items():
+            if isinstance(value, dict) and "name" in value:
+                file_info_msg += f"\\n注意: {{value.get('name', '未知文件')}} 已上传作为 {{key}} 的内容。"
+
+    messages = state["messages"] + [HumanMessage(content=prompt + file_info_msg)]
 
     # Process with LLM
     response = llm.invoke(messages)

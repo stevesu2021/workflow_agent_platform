@@ -7,6 +7,7 @@
 langchain >= 1.0
 langgraph >= 1.0
 
+Loop 10轮并不是强制必须的，是如果代码出现问题，需要自我修复问题最多到10轮退出。
 在自动生成代码环节，还需要考虑到“Resource Attachments”的内容和“IO Configuration”的内容。
 代码中需要将“Resource Attachments”的内容加载并提前处理；
 代码中，“IO Configuration”的内容的Inputs部分，作为运行代码的输入参数处理。

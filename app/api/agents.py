@@ -343,6 +343,8 @@ async def run_agent(
         from app.services.openmanus_langgraph_generator import get_generator
         generator = get_generator()
         workspace_dir = os.path.join(generator.workspace_base, generator._sanitize_name(agent.name))
+        # Convert to absolute path to avoid path issues
+        workspace_dir = os.path.abspath(workspace_dir)
 
         agent_file = os.path.join(workspace_dir, "agent.py")
         if not os.path.exists(agent_file):
@@ -363,8 +365,16 @@ async def run_agent(
             # Also store the path for the input name
             # Extract field name from format file_{field_name}
             field_name = file.filename.replace("file_", "").replace(str(agent.id), "")
+
+            # Store file info in inputs_data
             if field_name in inputs_data:
-                inputs_data[field_name + "_path"] = file_path
+                # Replace the upload UID with actual file info
+                inputs_data[field_name] = {
+                    "name": os.path.basename(file.filename),
+                    "path": file_path,
+                    "size": os.path.getsize(file_path) if os.path.exists(file_path) else 0,
+                    "original_name": file.filename
+                }
 
         # Prepare run script
         run_script = f'''
@@ -372,8 +382,8 @@ import sys
 import json
 import os
 
-# Add workspace to path
-sys.path.insert(0, "{workspace_dir}")
+# Add workspace to path (use absolute path)
+sys.path.insert(0, r"{workspace_dir}")
 
 # Set environment variables for LLM
 os.environ["LLM_API_KEY"] = os.getenv("LLM_API_KEY", "")
@@ -516,108 +526,194 @@ async def generate_and_run_agent(
         io_config = config.get("io_config", {})
         for input_field in io_config.get("inputs", []):
             if input_field.get("default_value"):
-                default_inputs[input_field["name"]] = input_field["default_value"]
+                field_name = input_field["name"]
+                field_type = input_field.get("type", "text")
+                default_value = input_field["default_value"]
 
-        # Main loop
+                # For file type, default_value is JSON with file info
+                if field_type == "file":
+                    try:
+                        import json
+                        file_info = json.loads(default_value)
+                        # Store file info, will be processed during resource setup
+                        default_inputs[field_name] = file_info
+                    except json.JSONDecodeError:
+                        # Not a valid JSON, use as-is
+                        default_inputs[field_name] = default_value
+                else:
+                    default_inputs[field_name] = default_value
+
+        # Main loop for code generation and fixing
+        # Loop 0: Generate initial code and run
+        # Loop 1+: Only if code execution fails, attempt to fix and retry
         for loop_count in range(request.max_loops):
-            # Step 1: Generate code
-            session.add(AgentRunLog(
-                agent_id=agent.id,
-                loop_count=loop_count,
-                stage="code_generation",
-                status="running",
-                message=f"Starting code generation (Loop {loop_count + 1}/{request.max_loops})"
-            ))
-            await session.commit()
+            # On first loop, generate code; on subsequent loops, only fix if failed
+            if loop_count == 0:
+                # Step 1: Generate code (only on first loop)
+                session.add(AgentRunLog(
+                    agent_id=agent.id,
+                    loop_count=loop_count,
+                    stage="code_generation",
+                    status="running",
+                    message=f"Generating code..."
+                ))
+                await session.commit()
 
-            # Get decomposition doc (generate if not exists)
-            decomposition_doc = config.get("decomposition_doc")
-            if not decomposition_doc:
-                decomp_service = RequirementDecompositionService(session)
-                decomposition_doc = await decomp_service.decompose_requirements(
-                    agent_data={"name": agent.name, "description": agent.description},
+                # Get decomposition doc (generate if not exists)
+                decomposition_doc = config.get("decomposition_doc")
+                if not decomposition_doc:
+                    decomp_service = RequirementDecompositionService(session)
+                    decomposition_doc = await decomp_service.decompose_requirements(
+                        agent_data={"name": agent.name, "description": agent.description},
+                        config=config
+                    )
+                    # Save to config
+                    config["decomposition_doc"] = decomposition_doc
+
+                # Generate code
+                # First, enrich config with actual LLM credentials
+                thinking_model = config.get("model_thinking", "gpt-4")
+                summary_model = config.get("model_summary", "gpt-3.5-turbo")
+
+                # Get LLM resource details
+                for model_key, model_name in [("thinking", thinking_model), ("summary", summary_model)]:
+                    llm_resource = await ai_resource_service.get_resource_by_name(model_name, "text_llm")
+                    if llm_resource:
+                        config[f"llm_{model_key}_api_key"] = llm_resource.api_key or ""
+                        config[f"llm_{model_key}_base_url"] = llm_resource.endpoint or ""
+                        # Extract base URL without /chat/completions suffix
+                        base_url = llm_resource.endpoint or ""
+                        if base_url.endswith("/chat/completions"):
+                            base_url = base_url[:-17].rstrip("/")
+                        config[f"llm_{model_key}_base_url"] = base_url
+
+                generator = get_generator()
+                files = generator.generate_agent_code(
+                    agent_name=agent.name,
+                    agent_description=agent.description or "",
+                    decomposition_doc=decomposition_doc,
                     config=config
                 )
-                # Save to config
-                config["decomposition_doc"] = decomposition_doc
 
-            # Generate code
-            # First, enrich config with actual LLM credentials
-            thinking_model = config.get("model_thinking", "gpt-4")
-            summary_model = config.get("model_summary", "gpt-3.5-turbo")
+                # Save files
+                workspace_dir = workspace_service.workspace_dir
+                os.makedirs(workspace_dir, exist_ok=True)
+                for file_name, file_content in files.items():
+                    file_path = os.path.join(workspace_dir, file_name)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(file_content)
 
-            # Get LLM resource details
-            for model_key, model_name in [("thinking", thinking_model), ("summary", summary_model)]:
-                llm_resource = await ai_resource_service.get_resource_by_name(model_name, "text_llm")
-                if llm_resource:
-                    config[f"llm_{model_key}_api_key"] = llm_resource.api_key or ""
-                    config[f"llm_{model_key}_base_url"] = llm_resource.endpoint or ""
-                    # Extract base URL without /chat/completions suffix
-                    base_url = llm_resource.endpoint or ""
-                    if base_url.endswith("/chat/completions"):
-                        base_url = base_url[:-17].rstrip("/")
-                    config[f"llm_{model_key}_base_url"] = base_url
+                # Handle resource files - copy to workspace
+                import shutil
+                resource_files = config.get("resource_files", [])
+                if resource_files:
+                    resources_dir = os.path.join(workspace_dir, "resources")
+                    os.makedirs(resources_dir, exist_ok=True)
+                    for rf in resource_files:
+                        # Get actual file path from knowledge base or upload
+                        rf_name = rf.get("name", "")
+                        rf_status = rf.get("status", "")
+                        if rf_status == "done" and rf_name:
+                            # Try to find the file in knowledge base
+                            kb_id = config.get("resource_knowledge_base_id")
+                            if kb_id:
+                                # For now, just create a placeholder
+                                placeholder_path = os.path.join(resources_dir, rf_name)
+                                with open(placeholder_path, 'w') as f:
+                                    f.write(f"# Resource file: {rf_name}\n# This file should be loaded from the knowledge base.")
+                                session.add(AgentRunLog(
+                                    agent_id=agent.id,
+                                    loop_count=loop_count,
+                                    stage="resource_setup",
+                                    status="running",
+                                    message=f"Created resource placeholder: {rf_name}"
+                                ))
+                            else:
+                                # No knowledge base, create placeholder
+                                placeholder_path = os.path.join(resources_dir, rf_name)
+                                with open(placeholder_path, 'w') as f:
+                                    f.write(f"# Resource file: {rf_name}\n# This file should be uploaded separately.")
 
-            generator = get_generator()
-            files = generator.generate_agent_code(
-                agent_name=agent.name,
-                agent_description=agent.description or "",
-                decomposition_doc=decomposition_doc,
-                config=config
-            )
+                # Handle default input files - copy to workspace
+                input_files_dir = os.path.join(workspace_dir, "test_inputs")
+                os.makedirs(input_files_dir, exist_ok=True)
+                for field_name, field_value in default_inputs.items():
+                    # Check if this is a file input (dict with file info)
+                    if isinstance(field_value, dict) and "name" in field_value:
+                        file_name = field_value.get("name", "")
+                        # Create a placeholder file for testing
+                        test_file_path = os.path.join(input_files_dir, file_name)
+                        with open(test_file_path, 'w') as f:
+                            f.write(f"# Test input file: {file_name}\n# This is a placeholder for default input testing.\n")
+                        session.add(AgentRunLog(
+                            agent_id=agent.id,
+                            loop_count=loop_count,
+                            stage="input_setup",
+                            status="running",
+                            message=f"Created test input file: {file_name}"
+                        ))
+                        await session.commit()
 
-            # Save files
-            workspace_dir = workspace_service.workspace_dir
-            os.makedirs(workspace_dir, exist_ok=True)
-            for file_name, file_content in files.items():
-                file_path = os.path.join(workspace_dir, file_name)
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(file_content)
 
-            session.add(AgentRunLog(
-                agent_id=agent.id,
-                loop_count=loop_count,
-                stage="code_generation",
-                status="success",
-                message=f"Code generated successfully: {list(files.keys())}"
-            ))
-            await session.commit()
+                session.add(AgentRunLog(
+                    agent_id=agent.id,
+                    loop_count=loop_count,
+                    stage="code_generation",
+                    status="success",
+                    message=f"Code generated successfully: {list(files.keys())}"
+                ))
+                await session.commit()
 
-            # Step 2: Setup venv (only on first loop or if venv doesn't exist)
-            import shutil
-            venv_dir = os.path.join(workspace_dir, "venv")
-            if loop_count == 0 or not os.path.exists(venv_dir):
-                # Delete existing venv to ensure fresh dependencies
-                if os.path.exists(venv_dir):
+                # Step 2: Setup venv (only on first loop)
+                import shutil
+                venv_dir = os.path.join(workspace_dir, "venv")
+                if not os.path.exists(venv_dir):
                     session.add(AgentRunLog(
                         agent_id=agent.id,
                         loop_count=loop_count,
                         stage="venv_setup",
                         status="running",
-                        message=f"Removing old venv for fresh installation"
+                        message=f"Setting up virtual environment..."
                     ))
                     await session.commit()
-                    try:
-                        shutil.rmtree(venv_dir)
-                    except Exception as e:
-                        pass  # Ignore errors
 
-                venv_result = await workspace_service.setup_virtual_environment(loop_count)
-                if not venv_result["success"]:
-                    session.add(AgentRunLog(
-                        agent_id=agent.id,
-                        loop_count=loop_count,
-                        stage="venv_setup",
-                        status="error",
-                        message=f"Venv setup failed: {venv_result['logs']}"
-                    ))
-                    await session.commit()
-                    return {
-                        "success": False,
-                        "loop_count": loop_count + 1,
-                        "error": "Failed to setup virtual environment",
-                        "logs": venv_result["logs"]
-                    }
+                    venv_result = await workspace_service.setup_virtual_environment(loop_count)
+                    if not venv_result["success"]:
+                        # Read graph.json for visualization even on error
+                        graph_path = os.path.join(workspace_dir, "graph.json")
+                        graph_data = None
+                        try:
+                            with open(graph_path, 'r', encoding='utf-8') as f:
+                                graph_data = json.load(f)
+                        except:
+                            pass
+
+                        session.add(AgentRunLog(
+                            agent_id=agent.id,
+                            loop_count=loop_count,
+                            stage="venv_setup",
+                            status="error",
+                            message=f"Venv setup failed: {venv_result['logs']}"
+                        ))
+                        await session.commit()
+                        return {
+                            "success": False,
+                            "loop_count": loop_count + 1,
+                            "error": "Failed to setup virtual environment",
+                            "logs": venv_result["logs"],
+                            "graph": graph_data,
+                            "workspace_dir": workspace_dir
+                        }
+            else:
+                # On subsequent loops, we're in fix mode
+                session.add(AgentRunLog(
+                    agent_id=agent.id,
+                    loop_count=loop_count,
+                    stage="fixing",
+                    status="running",
+                    message=f"Attempting fix (Loop {loop_count + 1}/{request.max_loops})..."
+                ))
+                await session.commit()
 
             # Step 3: Run agent
             session.add(AgentRunLog(
@@ -646,11 +742,22 @@ async def generate_and_run_agent(
                 ))
                 await session.commit()
 
+                # Read graph.json for visualization
+                graph_path = os.path.join(workspace_dir, "graph.json")
+                graph_data = None
+                try:
+                    with open(graph_path, 'r', encoding='utf-8') as f:
+                        graph_data = json.load(f)
+                except:
+                    pass
+
                 return {
                     "success": True,
                     "loop_count": loop_count + 1,
                     "outputs": run_result.get("outputs", {}),
-                    "message": f"Agent completed successfully after {loop_count + 1} loop(s)"
+                    "message": f"Agent completed successfully after {loop_count + 1} loop(s)",
+                    "graph": graph_data,
+                    "workspace_dir": workspace_dir
                 }
             else:
                 # Step 4: Fix code with LLM
@@ -680,15 +787,23 @@ async def generate_and_run_agent(
                     await session.commit()
                     break
 
+                # Read current agent.py for fixing
+                agent_path = os.path.join(workspace_dir, "agent.py")
+                try:
+                    with open(agent_path, 'r', encoding='utf-8') as f:
+                        current_agent_code = f.read()
+                except Exception as e:
+                    current_agent_code = f"# Could not read file: {e}"
+
                 # Use LLM to fix the code
                 fix_prompt = f"""The following agent code failed with an error. Please generate fixed code.
 
 **Error:**
 {error_message}
 
-**Original agent.py:**
+**Current agent.py:**
 ```python
-{files.get('agent.py', '')}
+{current_agent_code}
 ```
 
 Generate the complete fixed agent.py code that addresses the error. Respond only with the code, no explanations.
@@ -758,7 +873,16 @@ Generate the complete fixed agent.py code that addresses the error. Respond only
                     await session.commit()
                     break
 
-        # Max loops reached
+        # Max loops reached - return with graph data for visualization
+        # Read graph.json for visualization
+        graph_path = os.path.join(workspace_dir, "graph.json")
+        graph_data = None
+        try:
+            with open(graph_path, 'r', encoding='utf-8') as f:
+                graph_data = json.load(f)
+        except:
+            pass
+
         session.add(AgentRunLog(
             agent_id=agent.id,
             loop_count=request.max_loops - 1,
@@ -772,7 +896,9 @@ Generate the complete fixed agent.py code that addresses the error. Respond only
             "success": False,
             "loop_count": request.max_loops,
             "error": f"Agent failed after {request.max_loops} attempts",
-            "message": "Maximum loop count reached without success"
+            "message": "Maximum loop count reached without success",
+            "graph": graph_data,
+            "workspace_dir": workspace_dir
         }
 
     except Exception as e:
@@ -798,23 +924,28 @@ async def _execute_agent(
     # Convert to absolute path
     workspace_dir = os.path.abspath(workspace_dir)
 
-    # Convert inputs dict to a string for the agent
-    # If inputs is empty or contains structured data, convert to JSON string
+    # Convert inputs to appropriate Python literal for the agent
+    # The agent.run() method handles dict inputs directly
     if not inputs:
-        user_input_str = '"Hello"'  # Default message when no input provided
+        user_input_literal = '"Hello"'  # Default message when no input provided
     elif len(inputs) == 1 and "message" in inputs:
-        # Single message input
-        user_input_str = json.dumps(inputs["message"], ensure_ascii=False)
+        # Single message input - use the value directly
+        msg_value = inputs["message"]
+        if isinstance(msg_value, str):
+            user_input_literal = json.dumps(msg_value, ensure_ascii=False)
+        else:
+            user_input_literal = json.dumps(msg_value, ensure_ascii=False)
     else:
-        # Structured input, convert to JSON string
-        user_input_str = json.dumps(inputs, ensure_ascii=False)
+        # Structured input - pass as Python dict literal
+        user_input_literal = json.dumps(inputs, ensure_ascii=False)
 
     run_script = f'''
 import sys
 import json
 import os
 
-sys.path.insert(0, "{workspace_dir}")
+# Add workspace to path (use absolute path)
+sys.path.insert(0, r"{workspace_dir}")
 
 # Clear proxy environment variables to avoid SOCKS proxy errors
 proxy_vars = ['http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY', 'no_proxy', 'NO_PROXY']
@@ -822,7 +953,7 @@ for var in proxy_vars:
     os.environ.pop(var, None)
 
 # Load .env file from workspace directory
-env_file = os.path.join("{workspace_dir}", ".env")
+env_file = os.path.join(r"{workspace_dir}", ".env")
 if os.path.exists(env_file):
     from dotenv import load_dotenv
     load_dotenv(env_file)
@@ -833,7 +964,7 @@ else:
 from agent import create_agent
 
 agent = create_agent()
-user_input = {user_input_str}
+user_input = {user_input_literal}
 
 try:
     result = agent.run(user_input)

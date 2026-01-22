@@ -85,6 +85,7 @@ const AgenticStudio: React.FC = () => {
   const [defaultInputModalVisible, setDefaultInputModalVisible] = useState(false);
   const [currentInputField, setCurrentInputField] = useState<IOField | null>(null);
   const [defaultInputForm] = Form.useForm();
+  const [defaultInputFile, setDefaultInputFile] = useState<UploadFile | null>(null);
 
   // State for process log drawer
   const [logDrawerVisible, setLogDrawerVisible] = useState(false);
@@ -517,6 +518,17 @@ const AgenticStudio: React.FC = () => {
         message.warning(`智能体运行结束: ${result.message || '达到最大循环次数'}`);
       }
 
+      // Set generated code to enable "Run Code" button and include graph data
+      setGeneratedCode({
+        success: result.success,
+        loop_count: result.loop_count,
+        outputs: result.outputs,
+        message: result.message,
+        graph: result.graph,  // Include graph data for visualization
+        workspace_dir: result.workspace_dir,
+        generated_at: new Date().toISOString()
+      });
+
       // Refresh logs
       handleFetchLogs();
 
@@ -890,7 +902,8 @@ const AgenticStudio: React.FC = () => {
         label: values.label,
         placeholder: values.placeholder,
         required: values.required || false,
-        default_value: values.default_value,
+        // For file type, preserve existing default_value if editing, otherwise use form value
+        default_value: (values.type === 'file' && currentIoField?.default_value) ? currentIoField.default_value : values.default_value,
         options: options,
         file_types: values.file_types,
         validation: values.min_length || values.max_length || values.pattern ? {
@@ -946,20 +959,53 @@ const AgenticStudio: React.FC = () => {
   // Handle default input configuration
   const handleConfigureDefaultInput = (field: IOField) => {
     setCurrentInputField(field);
+    setDefaultInputFile(null);
     defaultInputForm.setFieldsValue({
       default_value: field.default_value || ''
     });
+    // If field type is file and has default value, parse it as file info
+    if (field.type === 'file' && field.default_value) {
+      try {
+        const fileInfo = JSON.parse(field.default_value);
+        setDefaultInputFile({
+          uid: '-1',
+          name: fileInfo.name || 'default_file',
+          status: 'done',
+          url: fileInfo.url,
+          response: fileInfo
+        } as UploadFile);
+      } catch {
+        // Not a valid JSON, treat as file path
+        setDefaultInputFile({
+          uid: '-1',
+          name: field.default_value,
+          status: 'done'
+        } as UploadFile);
+      }
+    }
     setDefaultInputModalVisible(true);
   };
 
   const handleDefaultInputOk = () => {
     defaultInputForm.validateFields().then(values => {
       if (currentInputField) {
+        let defaultValue = values.default_value;
+
+        // For file type, store file information as JSON
+        if (currentInputField.type === 'file' && defaultInputFile) {
+          defaultValue = JSON.stringify({
+            name: defaultInputFile.name,
+            url: defaultInputFile.url || defaultInputFile.response?.url,
+            size: defaultInputFile.size,
+            type: defaultInputFile.type
+          });
+        }
+
         setIoConfig(prev => ({
           ...prev,
           inputs: prev.inputs.map(f =>
             f.id === currentInputField.id
-              ? { ...f, default_value: values.default_value }
+              ? { ...f, default_value: defaultValue }
               : f
           )
         }));
@@ -967,6 +1013,7 @@ const AgenticStudio: React.FC = () => {
       }
       setDefaultInputModalVisible(false);
       defaultInputForm.resetFields();
+      setDefaultInputFile(null);
       setCurrentInputField(null);
     });
   };
@@ -1218,15 +1265,14 @@ const AgenticStudio: React.FC = () => {
                         style={{ backgroundColor: '#fafafa' }}
                         extra={
                           <Space>
-                            {field.required && (
-                              <Button
-                                type="link"
-                                size="small"
-                                onClick={() => handleConfigureDefaultInput(field)}
-                              >
-                                配置默认值
-                              </Button>
-                            )}
+                            <Button
+                              type="link"
+                              size="small"
+                              onClick={() => handleConfigureDefaultInput(field)}
+                              icon={<InboxOutlined />}
+                            >
+                              配置默认值
+                            </Button>
                             <Button
                               type="link"
                               size="small"
@@ -1864,6 +1910,7 @@ const AgenticStudio: React.FC = () => {
         onCancel={() => {
           setDefaultInputModalVisible(false);
           defaultInputForm.resetFields();
+          setDefaultInputFile(null);
           setCurrentInputField(null);
         }}
         width={600}
@@ -1885,26 +1932,56 @@ const AgenticStudio: React.FC = () => {
             <Input value={currentInputField?.type} disabled />
           </Form.Item>
 
-          <Form.Item
-            name="default_value"
-            label="默认值"
-            rules={[{ required: true, message: '请输入默认值' }]}
-            extra="此值将在自动运行智能体时作为输入参数"
-          >
-            {currentInputField?.type === 'textarea' ? (
-              <TextArea
-                rows={4}
-                placeholder="请输入默认值..."
-              />
-            ) : currentInputField?.type === 'number' ? (
-              <InputNumber
-                style={{ width: '100%' }}
-                placeholder="请输入默认值..."
-              />
-            ) : (
-              <Input placeholder="请输入默认值..." />
-            )}
-          </Form.Item>
+          {currentInputField?.type === 'file' ? (
+            <>
+              <Form.Item label="上传默认文件">
+                <Upload
+                  fileList={defaultInputFile ? [defaultInputFile] : []}
+                  onChange={({ fileList }) => {
+                    if (fileList.length > 0) {
+                      setDefaultInputFile(fileList[0]);
+                    } else {
+                      setDefaultInputFile(null);
+                    }
+                  }}
+                  beforeUpload={() => false}
+                  maxCount={1}
+                >
+                  <Button icon={<UploadOutlined />}>选择文件</Button>
+                </Upload>
+                <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+                  支持的文件类型: {currentInputField.file_types?.join(', ') || '所有文件'}
+                </div>
+              </Form.Item>
+              <Form.Item
+                name="default_value"
+                hidden
+              >
+                <Input />
+              </Form.Item>
+            </>
+          ) : (
+            <Form.Item
+              name="default_value"
+              label="默认值"
+              rules={[{ required: true, message: '请输入默认值' }]}
+              extra="此值将在自动运行智能体时作为输入参数"
+            >
+              {currentInputField?.type === 'textarea' ? (
+                <TextArea
+                  rows={4}
+                  placeholder="请输入默认值..."
+                />
+              ) : currentInputField?.type === 'number' ? (
+                <InputNumber
+                  style={{ width: '100%' }}
+                  placeholder="请输入默认值..."
+                />
+              ) : (
+                <Input placeholder="请输入默认值..." />
+              )}
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 
