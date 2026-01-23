@@ -132,22 +132,35 @@ class AiResourceService:
         if resource.type == "ocr_paddle":
              return await self._test_paddleocr(resource, payload)
 
+        if resource.type == "mineru":
+            # Mineru is handled by the frontend directly via FormData
+            # This is called for connection testing only
+            return {
+                "status": "success",
+                "message": "Mineru file parsing should be tested from the frontend with actual file upload",
+                "resource_info": {
+                    "name": resource.name,
+                    "endpoint": resource.endpoint,
+                    "type": resource.type
+                }
+            }
+
         import httpx
-        
+
         headers = {
             "Content-Type": "application/json"
         }
         if resource.api_key:
             headers["Authorization"] = f"Bearer {resource.api_key}"
-            
+
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
-                    resource.endpoint, 
+                    resource.endpoint,
                     headers=headers,
                     json=payload
                 )
-                
+
                 try:
                     response_data = response.json()
                 except Exception:
@@ -163,7 +176,7 @@ class AiResourceService:
                     },
                     "response": response_data
                 }
-                
+
         except Exception as e:
             return {
                 "status": "error",

@@ -1,16 +1,17 @@
 import uuid
 from typing import List, Optional, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException, Body, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_session
 from app.schemas.ai_resource_schema import (
-    AiResourceCreate, 
-    AiResourceUpdate, 
-    AiResourceResponse, 
+    AiResourceCreate,
+    AiResourceUpdate,
+    AiResourceResponse,
     AiResourceListResponse,
     TestConnectionResponse
 )
 from app.services.ai_resource_service import AiResourceService
+import httpx
 
 router = APIRouter()
 
@@ -49,15 +50,15 @@ async def list_all_resources(
     """
     service = AiResourceService(session)
     resources = await service.list_resources()
-    
+
     # We might want to mask the API key here
     results = []
     for r in resources:
-        res_dict = r.dict()
+        res_dict = r.model_dump()
         if res_dict.get('api_key'):
             res_dict['api_key'] = "sk-***" + res_dict['api_key'][-4:] if len(res_dict['api_key']) > 4 else "***"
         results.append(AiResourceResponse(**res_dict))
-        
+
     return results
 
 @router.post("/", response_model=AiResourceResponse)
@@ -146,6 +147,66 @@ async def test_resource_execution(
     resource = await service.get_resource(resource_id)
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
-        
+
     result = await service.execute_test(resource, payload)
     return result
+
+
+@router.post("/{resource_id}/mineru-parse")
+async def mineru_parse_proxy(
+    resource_id: uuid.UUID,
+    file: UploadFile = File(...),
+    backend: str = Form("vlm-vllm-async-engine"),
+    parse_method: str = Form("auto"),
+    formula_enable: str = Form("true"),
+    table_enable: str = Form("true"),
+    start_page_id: str = Form("0"),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    Proxy endpoint for Mineru PDF parsing.
+    Accepts a file upload and forwards it to the Mineru server.
+    """
+    service = AiResourceService(session)
+    resource = await service.get_resource(resource_id)
+    if not resource:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    if resource.type != 'mineru':
+        raise HTTPException(status_code=400, detail="This endpoint is only for mineru type resources")
+
+    # Read the uploaded file
+    file_content = await file.read()
+
+    # Create multipart/form-data request to Mineru server
+    files = {
+        'files': (file.filename, file_content, file.content_type)
+    }
+    data = {
+        'backend': backend,
+        'parse_method': parse_method,
+        'formula_enable': formula_enable,
+        'table_enable': table_enable,
+        'start_page_id': start_page_id
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=300.0) as client:  # 5 minute timeout for PDF processing
+            response = await client.post(
+                resource.endpoint,
+                files=files,
+                data=data
+            )
+
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Mineru server returned error: {response.text}"
+                )
+
+            return response.json()
+
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=408, detail="Mineru server timeout")
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Failed to connect to Mineru server: {str(e)}")

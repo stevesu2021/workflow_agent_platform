@@ -5,6 +5,7 @@ export enum AiResourceType {
   OCR_DEEPSEEK = 'ocr_deepseek',
   EMBEDDING = 'embedding',
   RERANKER = 'reranker',
+  MINERU = 'mineru',
 }
 
 export const AiResourceTypeLabels: Record<string, string> = {
@@ -14,6 +15,7 @@ export const AiResourceTypeLabels: Record<string, string> = {
   [AiResourceType.OCR_DEEPSEEK]: 'DeepSeek-OCR',
   [AiResourceType.EMBEDDING]: 'Embedding Model',
   [AiResourceType.RERANKER]: 'Reranker',
+  [AiResourceType.MINERU]: 'Mineru',
 };
 
 export interface AiResource {

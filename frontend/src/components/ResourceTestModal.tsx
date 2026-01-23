@@ -17,9 +17,28 @@ const ResourceTestModal: React.FC<ResourceTestModalProps> = ({ resource, visible
   const [inputContent, setInputContent] = useState<string>('');
   const [outputContent, setOutputContent] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
+  const [mineruFile, setMineruFile] = useState<File | null>(null);
+  const [mineruConfig, setMineruConfig] = useState({
+    backend: 'vlm-vllm-async-engine',
+    parse_method: 'auto',
+    formula_enable: 'true',
+    table_enable: 'true',
+    start_page_id: '0'
+  });
 
   // Default Templates based on resource type
   const getTemplate = (type: string) => {
+    // Mineru PDF Parsing Template
+    if (type === 'mineru') {
+      return JSON.stringify({
+        backend: 'vlm-vllm-async-engine',
+        parse_method: 'auto',
+        formula_enable: 'true',
+        table_enable: 'true',
+        start_page_id: '0'
+      }, null, 2);
+    }
+
     // Vision / Image Model Template
     if (type === 'vision_llm' || type.includes('vision')) {
       return JSON.stringify({
@@ -61,7 +80,7 @@ const ResourceTestModal: React.FC<ResourceTestModalProps> = ({ resource, visible
         model: resource?.name || "Qwen3-Embedding-0.6B"
       }, null, 2);
     }
-    
+
     // Default Text LLM Template
     return JSON.stringify({
       model: resource?.name || "gpt-3.5-turbo",
@@ -84,18 +103,61 @@ const ResourceTestModal: React.FC<ResourceTestModalProps> = ({ resource, visible
     if (!resource) return;
     setLoading(true);
     try {
-      let payload;
-      try {
-        payload = JSON.parse(inputContent);
-      } catch (e) {
-        message.error('Invalid JSON input');
-        setLoading(false);
-        return;
-      }
+      // Special handling for mineru type - needs file upload
+      if (resource.type === 'mineru') {
+        if (!mineruFile) {
+          message.error('Please select a PDF file to test Mineru parsing');
+          setLoading(false);
+          return;
+        }
 
-      const result = await aiResourcesApi.testResource(resource.id, payload);
-      setOutputContent(JSON.stringify(result, null, 2));
-      message.success('Test executed successfully');
+        // Create FormData for file upload
+        const formData = new FormData();
+        formData.append('file', mineruFile);
+
+        // Parse config from inputContent or use default config
+        let config;
+        try {
+          config = JSON.parse(inputContent);
+        } catch (e) {
+          config = mineruConfig; // Use default config
+        }
+
+        formData.append('backend', config.backend || 'vlm-vllm-async-engine');
+        formData.append('parse_method', config.parse_method || 'auto');
+        formData.append('formula_enable', config.formula_enable || 'true');
+        formData.append('table_enable', config.table_enable || 'true');
+        formData.append('start_page_id', config.start_page_id || '0');
+
+        // Call the backend proxy endpoint
+        const response = await fetch(`/api/ai-resources/${resource.id}/mineru-parse`, {
+          method: 'POST',
+          body: formData
+        });
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+          throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        setOutputContent(JSON.stringify(result, null, 2));
+        message.success('Mineru test executed successfully');
+      } else {
+        // Standard JSON payload for other types
+        let payload;
+        try {
+          payload = JSON.parse(inputContent);
+        } catch (e) {
+          message.error('Invalid JSON input');
+          setLoading(false);
+          return;
+        }
+
+        const result = await aiResourcesApi.testResource(resource.id, payload);
+        setOutputContent(JSON.stringify(result, null, 2));
+        message.success('Test executed successfully');
+      }
     } catch (error: any) {
       setOutputContent(JSON.stringify({ error: error.message || 'Unknown error' }, null, 2));
       message.error('Test execution failed');
@@ -150,38 +212,73 @@ const ResourceTestModal: React.FC<ResourceTestModalProps> = ({ resource, visible
         </Button>
       ]}
     >
-      <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-        
+      <Space orientation="vertical" size="middle" style={{ width: '100%' }}>
+
         <Card size="small" title="Request Details" type="inner">
-          <Space direction="vertical" style={{ width: '100%' }}>
+          <Space orientation="vertical" style={{ width: '100%' }}>
             <div>
               <Text strong>Request URL: </Text>
               <Text code copyable>{resource.endpoint}</Text>
             </div>
-            <div>
-              <Text strong>Request Headers: </Text>
-              <Text code>Authorization: Bearer {'*'.repeat(8)}</Text>
-            </div>
+            {resource.type !== 'mineru' && (
+              <div>
+                <Text strong>Request Headers: </Text>
+                <Text code>Authorization: Bearer {'*'.repeat(8)}</Text>
+              </div>
+            )}
+            {resource.type === 'mineru' && (
+              <div>
+                <Text type="secondary">Mineru uses multipart/form-data for file upload</Text>
+              </div>
+            )}
           </Space>
         </Card>
 
+        {/* Mineru File Upload Section */}
+        {resource.type === 'mineru' && (
+          <Card size="small" title="PDF File Upload" type="inner">
+            <Space orientation="vertical" style={{ width: '100%' }}>
+              <Upload
+                accept=".pdf"
+                fileList={mineruFile ? [{ uid: '1', name: mineruFile.name, status: 'done' }] : []}
+                onRemove={() => setMineruFile(null)}
+                beforeUpload={(file) => {
+                  setMineruFile(file);
+                  return false;
+                }}
+                maxCount={1}
+              >
+                <Button icon={<UploadOutlined />}>Select PDF File</Button>
+              </Upload>
+              {mineruFile && (
+                <Text type="secondary">Selected: {mineruFile.name} ({(mineruFile.size / 1024 / 1024).toFixed(2)} MB)</Text>
+              )}
+            </Space>
+          </Card>
+        )}
+
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-            <Text strong>Input Demo (JSON Body):</Text>
-            <Space>
-               <Button size="small" onClick={() => setInputContent(getTemplate(resource.type))}>Reset Template</Button>
-               <Upload 
-                beforeUpload={handleFileRead} 
-                showUploadList={false}
-                accept="image/*,.pdf"
-              >
-                <Button icon={<UploadOutlined />} size="small" type="primary" ghost>Insert Image/File</Button>
-              </Upload>
-            </Space>
+            <Text strong>{resource.type === 'mineru' ? 'Config (JSON):' : 'Input Demo (JSON Body):'}</Text>
+            {resource.type !== 'mineru' && (
+              <Space>
+                <Button size="small" onClick={() => setInputContent(getTemplate(resource.type))}>Reset Template</Button>
+                <Upload
+                  beforeUpload={handleFileRead}
+                  showUploadList={false}
+                  accept="image/*,.pdf"
+                >
+                  <Button icon={<UploadOutlined />} size="small" type="primary" ghost>Insert Image/File</Button>
+                </Upload>
+              </Space>
+            )}
+            {resource.type === 'mineru' && (
+              <Button size="small" onClick={() => setInputContent(getTemplate(resource.type))}>Reset Template</Button>
+            )}
           </div>
-          <TextArea 
-            rows={12} 
-            value={inputContent} 
+          <TextArea
+            rows={resource.type === 'mineru' ? 6 : 12}
+            value={inputContent}
             onChange={e => setInputContent(e.target.value)}
             style={{ fontFamily: 'monospace', fontSize: '12px' }}
             spellCheck={false}
@@ -190,11 +287,11 @@ const ResourceTestModal: React.FC<ResourceTestModalProps> = ({ resource, visible
 
         <div>
           <Text strong>Output Demo:</Text>
-          <TextArea 
-            rows={10} 
-            value={outputContent} 
-            readOnly 
-            style={{ fontFamily: 'monospace', backgroundColor: '#fafafa', fontSize: '12px' }} 
+          <TextArea
+            rows={10}
+            value={outputContent}
+            readOnly
+            style={{ fontFamily: 'monospace', backgroundColor: '#fafafa', fontSize: '12px' }}
             placeholder="Response will appear here..."
           />
         </div>
