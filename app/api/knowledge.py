@@ -12,12 +12,14 @@ from app.core.database import get_session
 from app.models.knowledge import KnowledgeBase, Document
 from app.schemas.knowledge import (
     KnowledgeBaseCreate, KnowledgeBaseResponse, KnowledgeBaseListResponse, KnowledgeBaseUpdate,
-    DocumentResponse, SearchRequest, SearchResponse, SearchResult
+    DocumentResponse, SearchRequest, SearchResponse, SearchResult,
+    PageIndexSearchResponse, PageIndexSearchResult, PageIndexNode
 )
 from app.services.document_service import document_service
 from app.services.vector_service import vector_service
 from app.services.minio_service import minio_service
 from app.services.excel_service import excel_knowledge_service
+from app.services.pageindex_service import pageindex_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -873,3 +875,241 @@ async def reprocess_excel_document(
     )
 
     return {"message": "Reprocessing started"}
+
+
+# ==================== PageIndex Endpoints ====================
+
+@router.post("/{kb_id}/upload-pageindex", response_model=DocumentResponse)
+async def upload_pageindex_document(
+    kb_id: uuid.UUID,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    上传 PDF 文档用于 PageIndex 索引
+    """
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    if kb.type != "pageindex":
+        raise HTTPException(status_code=400, detail="This endpoint is only for PageIndex knowledge bases")
+
+    # 验证文件类型
+    ext = os.path.splitext(file.filename)[1].lower().replace(".", "")
+    if ext != "pdf":
+        raise HTTPException(status_code=400, detail="Only PDF files are supported for PageIndex")
+
+    # 保存文件到 MinIO
+    file_path = await document_service.save_file(file, kb_id)
+
+    # 创建 Document 记录
+    doc = Document(
+        knowledge_base_id=kb_id,
+        filename=file.filename,
+        file_path=file_path,
+        file_type=ext,
+        status="pending"
+    )
+    session.add(doc)
+    await session.commit()
+    await session.refresh(doc)
+
+    return DocumentResponse(
+        id=doc.id,
+        knowledge_base_id=doc.knowledge_base_id,
+        filename=doc.filename,
+        file_type=doc.file_type,
+        status=doc.status,
+        error_message=doc.error_message,
+        chunk_count=doc.chunk_count,
+        extra_metadata=doc.extra_metadata,
+        created_at=doc.created_at,
+        updated_at=doc.updated_at
+    )
+
+
+async def process_pageindex_task(doc_id: uuid.UUID, kb_id: uuid.UUID, session_factory):
+    """后台处理 PageIndex 文档"""
+    async with session_factory() as session:
+        doc = await session.get(Document, doc_id)
+        if not doc:
+            return
+
+        doc.status = "processing"
+        session.add(doc)
+        await session.commit()
+
+        try:
+            # 下载文件到临时位置
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp_path = tmp.name
+
+            minio_service.download_file(doc.file_path, tmp_path)
+
+            # 处理 PDF 文档
+            result = await pageindex_service.process_pdf_document(
+                file_path=tmp_path,
+                filename=doc.filename,
+                kb_id=str(kb_id),
+                doc_id=str(doc_id)
+            )
+
+            # 清理临时文件
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+            if result.get("success"):
+                doc.status = "completed"
+                doc.chunk_count = result.get("node_count", 0)
+                doc.extra_metadata = {
+                    "total_pages": result.get("total_pages", 0),
+                    "node_count": result.get("node_count", 0)
+                }
+                logger.info(f"PageIndex document processed: {doc.filename}, nodes: {doc.chunk_count}")
+            else:
+                doc.status = "error"
+                doc.error_message = result.get("error", "Unknown error")
+
+        except Exception as e:
+            import traceback
+            error_detail = f"{str(e)}\n{traceback.format_exc()}"
+            logger.error(f"Error processing PageIndex document {doc.filename}: {error_detail}")
+            doc.status = "error"
+            doc.error_message = str(e)
+
+        session.add(doc)
+        await session.commit()
+
+
+@router.post("/{kb_id}/documents/{doc_id}/process-pageindex")
+async def process_pageindex_document(
+    kb_id: uuid.UUID,
+    doc_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session)
+):
+    """处理 PageIndex 文档"""
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    if kb.type != "pageindex":
+        raise HTTPException(status_code=400, detail="This endpoint is only for PageIndex knowledge bases")
+
+    doc = await session.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status_code=400, detail="Document does not belong to this Knowledge Base")
+
+    from app.core.database import async_session_maker
+    background_tasks.add_task(process_pageindex_task, doc_id, kb_id, async_session_maker)
+
+    return {"message": "PageIndex processing started"}
+
+
+@router.post("/{kb_id}/pageindex-search", response_model=PageIndexSearchResponse)
+async def search_pageindex(
+    kb_id: uuid.UUID,
+    request: SearchRequest,
+    doc_id: Optional[str] = None,  # 可选：指定搜索特定文档
+    session: AsyncSession = Depends(get_session)
+):
+    """
+    PageIndex 搜索
+
+    如果指定 doc_id，则只搜索该文档；否则搜索所有已完成的文档
+    """
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    if kb.type != "pageindex":
+        raise HTTPException(status_code=400, detail="This endpoint is only for PageIndex knowledge bases")
+
+    # 获取要搜索的文档列表
+    if doc_id:
+        # 搜索特定文档
+        doc = await session.get(Document, doc_id)
+        if not doc or doc.knowledge_base_id != kb_id:
+            raise HTTPException(status_code=404, detail="Document not found")
+        documents = [doc]
+    else:
+        # 搜索所有已完成的文档
+        result = await session.execute(
+            select(Document).where(
+                Document.knowledge_base_id == kb_id,
+                Document.status == "completed"
+            )
+        )
+        documents = result.scalars().all()
+
+    if not documents:
+        return PageIndexSearchResponse(results=[], prompt=None)
+
+    # 对每个文档执行搜索
+    all_results = []
+    for doc in documents:
+        search_result = await pageindex_service.search(
+            kb_id=str(kb_id),
+            doc_id=str(doc.id),
+            question=request.query,
+            top_k=request.top_k,
+            use_rag=True
+        )
+
+        if "error" in search_result:
+            logger.warning(f"Search error in {doc.filename}: {search_result['error']}")
+            continue
+
+        # 将结果转换为响应格式
+        for node, page in zip(search_result["nodes"], search_result["pages"]):
+            all_results.append(PageIndexSearchResult(
+                node=PageIndexNode(**node),
+                page_content=page.get("text", "") if page else "",
+                score=0.0  # PageIndex 使用关键词匹配，没有相似度分数
+            ))
+
+    # 限制结果数量
+    all_results = all_results[:request.top_k]
+
+    return PageIndexSearchResponse(
+        results=all_results,
+        prompt=search_result.get("prompt") if all_results else None
+    )
+
+
+@router.get("/{kb_id}/documents/{doc_id}/pageindex-nodes")
+async def get_pageindex_nodes(
+    kb_id: uuid.UUID,
+    doc_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session)
+):
+    """获取 PageIndex 文档的结构化节点"""
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    if kb.type != "pageindex":
+        raise HTTPException(status_code=400, detail="This endpoint is only for PageIndex knowledge bases")
+
+    doc = await session.get(Document, doc_id)
+    if not doc or doc.knowledge_base_id != kb_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if doc.status != "completed":
+        raise HTTPException(status_code=400, detail="Document not processed yet")
+
+    index_data, _ = await pageindex_service.load_index_data(str(kb_id), str(doc_id))
+
+    if not index_data:
+        raise HTTPException(status_code=404, detail="Index data not found")
+
+    return {
+        "doc_name": index_data.get("doc_name"),
+        "total_pages": index_data.get("total_pages"),
+        "structure": index_data.get("structure", [])
+    }

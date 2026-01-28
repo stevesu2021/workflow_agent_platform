@@ -6,7 +6,7 @@ from pydantic import BaseModel
 class KnowledgeBaseBase(BaseModel):
     name: str
     description: Optional[str] = None
-    type: str = "text"  # text or excel
+    type: str = "text"  # text, excel, or pageindex
 
 class KnowledgeBaseCreate(KnowledgeBaseBase):
     pass
@@ -55,6 +55,26 @@ class SearchResult(BaseModel):
     content: str
     metadata: Dict[str, Any]
     score: float
+
+class PageIndexNode(BaseModel):
+    title: str
+    start_index: int
+    end_index: int
+    node_id: str
+    summary: str
+
+class PageIndexStructure(BaseModel):
+    doc_name: str
+    structure: List[PageIndexNode]
+
+class PageIndexSearchResult(BaseModel):
+    node: PageIndexNode
+    page_content: str
+    score: float
+
+class PageIndexSearchResponse(BaseModel):
+    results: List[PageIndexSearchResult]
+    prompt: Optional[str] = None
 
 class SearchResponse(BaseModel):
     results: List[SearchResult]

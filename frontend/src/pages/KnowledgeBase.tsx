@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { Button, Table, Modal, Form, Input, message, Space, Tag, Typography, Tooltip, Select } from 'antd';
-import { PlusOutlined, BookOutlined, CloudUploadOutlined, CloudDownloadOutlined, GlobalOutlined, RocketOutlined, FileTextOutlined, TableOutlined } from '@ant-design/icons';
+import { PlusOutlined, BookOutlined, CloudUploadOutlined, CloudDownloadOutlined, GlobalOutlined, RocketOutlined, FileTextOutlined, TableOutlined, PartitionOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { knowledgeApi } from '../api/knowledge';
 import type { KnowledgeBase } from '../types/knowledge';
@@ -100,7 +100,9 @@ const KnowledgeBaseList: React.FC = () => {
       key: 'name',
       render: (text: string, record: KnowledgeBase) => (
         <>
-          {record.type === 'excel' ? <TableOutlined /> : <FileTextOutlined />} {text}
+          {record.type === 'excel' ? <TableOutlined /> :
+           record.type === 'pageindex' ? <PartitionOutlined /> :
+           <FileTextOutlined />} {text}
         </>
       ),
     },
@@ -111,6 +113,8 @@ const KnowledgeBaseList: React.FC = () => {
       render: (type: string) => (
         type === 'excel' ? (
           <Tag color="blue" icon={<TableOutlined />}>Excel表格</Tag>
+        ) : type === 'pageindex' ? (
+          <Tag color="purple" icon={<PartitionOutlined />}>PageIndex</Tag>
         ) : (
           <Tag color="green" icon={<FileTextOutlined />}>文本</Tag>
         )
@@ -214,6 +218,9 @@ const KnowledgeBaseList: React.FC = () => {
               </Select.Option>
               <Select.Option value="excel">
                 <TableOutlined /> Excel表格类型 (支持 XLSX, XLS)
+              </Select.Option>
+              <Select.Option value="pageindex">
+                <PartitionOutlined /> PageIndex (支持 PDF 结构化索引)
               </Select.Option>
             </Select>
           </Form.Item>

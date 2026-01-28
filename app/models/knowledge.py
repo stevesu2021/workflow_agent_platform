@@ -8,6 +8,7 @@ from sqlalchemy.dialects.sqlite import JSON as SQLiteJSON
 class KnowledgeBaseType:
     TEXT = "text"
     EXCEL = "excel"
+    PAGEINDEX = "pageindex"
 
 class KnowledgeBase(SQLModel, table=True):
     __tablename__ = "knowledge_bases"

@@ -1,4 +1,4 @@
-import type { KnowledgeBase, KnowledgeBaseCreate, Document, SearchResult } from '../types/knowledge';
+import type { KnowledgeBase, KnowledgeBaseCreate, Document, SearchResult, PageIndexSearchResponse } from '../types/knowledge';
 
 const handleResponse = async (response: Response) => {
   if (!response.ok) {
@@ -97,6 +97,41 @@ export const knowledgeApi = {
     const response = await fetch(`/api/knowledge-bases/${kbId}/documents/${docId}/reprocess-excel`, {
       method: 'POST',
     });
+    return handleResponse(response);
+  },
+
+  // PageIndex APIs
+  uploadPageIndexDocument: async (id: string, file: File): Promise<Document> => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`/api/knowledge-bases/${id}/upload-pageindex`, {
+      method: 'POST',
+      body: formData,
+    });
+    return handleResponse(response);
+  },
+
+  processPageIndexDocument: async (kbId: string, docId: string): Promise<void> => {
+    const response = await fetch(`/api/knowledge-bases/${kbId}/documents/${docId}/process-pageindex`, {
+      method: 'POST',
+    });
+    return handleResponse(response);
+  },
+
+  searchPageIndex: async (id: string, query: string, topK: number = 10, docId?: string): Promise<PageIndexSearchResponse> => {
+    const params = new URLSearchParams();
+    if (docId) params.append('doc_id', docId);
+
+    const response = await fetch(`/api/knowledge-bases/${id}/pageindex-search?${params.toString()}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, top_k: topK }),
+    });
+    return handleResponse(response);
+  },
+
+  getPageIndexNodes: async (kbId: string, docId: string): Promise<any> => {
+    const response = await fetch(`/api/knowledge-bases/${kbId}/documents/${docId}/pageindex-nodes`);
     return handleResponse(response);
   }
 };

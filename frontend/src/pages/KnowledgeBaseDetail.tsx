@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Button, Table, Upload, message, Input, List, Tag, Tabs, Space, Divider, Typography, Modal, Tooltip, InputNumber, Select, Form, Alert, Checkbox, Descriptions } from 'antd';
-import { UploadOutlined, SearchOutlined, ArrowLeftOutlined, ReloadOutlined, DownloadOutlined, FileMarkdownOutlined, TableOutlined, FileTextOutlined, EyeOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, ArrowLeftOutlined, ReloadOutlined, DownloadOutlined, FileMarkdownOutlined, TableOutlined, FileTextOutlined, EyeOutlined, PartitionOutlined } from '@ant-design/icons';
 import { knowledgeApi } from '../api/knowledge';
-import type { KnowledgeBase, Document, SearchResult } from '../types/knowledge';
+import type { KnowledgeBase, Document, SearchResult, PageIndexSearchResponse, PageIndexNode } from '../types/knowledge';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -33,6 +33,12 @@ const KnowledgeBaseDetail: React.FC = () => {
   const [excelFile, setExcelFile] = useState<File | null>(null);
   const [indexColumnsModalVisible, setIndexColumnsModalVisible] = useState(false);
   const [form] = Form.useForm();
+
+  // PageIndex-specific states
+  const [pageindexUploading, setPageindexUploading] = useState(false);
+  const [pageindexSearchResults, setPageindexSearchResults] = useState<PageIndexSearchResponse | null>(null);
+  const [nodesModalVisible, setNodesModalVisible] = useState(false);
+  const [nodesList, setNodesList] = useState<any>(null);
 
   // Extract index columns from documents
   const indexColumnsInfo = useMemo(() => {
@@ -235,6 +241,57 @@ const KnowledgeBaseDetail: React.FC = () => {
     }
   };
 
+  // PageIndex handlers
+  const handlePageIndexUpload = async (file: File) => {
+    if (!id) return false;
+    setPageindexUploading(true);
+    try {
+      await knowledgeApi.uploadPageIndexDocument(id, file);
+      message.success('PDF uploaded successfully for PageIndex processing');
+      fetchKb();
+    } catch (error) {
+      message.error('PageIndex upload failed');
+    } finally {
+      setPageindexUploading(false);
+    }
+    return false;
+  };
+
+  const handlePageIndexProcess = async (docId: string) => {
+    if (!id) return;
+    try {
+      await knowledgeApi.processPageIndexDocument(id, docId);
+      message.success('PageIndex processing started');
+      fetchKb();
+    } catch (error) {
+      message.error('Failed to start PageIndex processing');
+    }
+  };
+
+  const handleViewNodes = async (doc: Document) => {
+    if (!id) return;
+    try {
+      const nodes = await knowledgeApi.getPageIndexNodes(id, doc.id);
+      setNodesList(nodes);
+      setNodesModalVisible(true);
+    } catch (error) {
+      message.error('Failed to load nodes');
+    }
+  };
+
+  const handlePageIndexSearch = async () => {
+    if (!id || !searchQuery.trim()) return;
+    setSearching(true);
+    try {
+      const response = await knowledgeApi.searchPageIndex(id, searchQuery, searchTopK);
+      setPageindexSearchResults(response);
+    } catch (error) {
+      message.error('PageIndex search failed');
+    } finally {
+      setSearching(false);
+    }
+  };
+
   const handleSearch = async () => {
     if (!id || !searchQuery.trim()) return;
     setSearching(true);
@@ -345,35 +402,50 @@ const KnowledgeBaseDetail: React.FC = () => {
       title: 'Action',
       key: 'action',
       render: (_: any, record: Document) => {
-        // Excel files are processed automatically on upload, no manual process needed
         const isExcelFile = record.file_type === 'xlsx' || record.file_type === 'xls';
-        // Check if Excel file has metadata for reprocessing (only new uploads have this)
+        const isPageIndexType = kb?.type === 'pageindex';
         const hasExcelMetadata = isExcelFile && record.extra_metadata && record.extra_metadata.excel_columns;
 
         return (
           <Space>
-             {!isExcelFile && (record.status === 'pending' || record.status === 'error') ? (
-               <Button size="small" type="primary" onClick={() => handleProcess(record.id)}>Process</Button>
-             ) : null}
-             {!isExcelFile && record.status === 'completed' ? (
-               <Button size="small" onClick={() => handleProcess(record.id)}>Reindex</Button>
-             ) : null}
-             {/* Excel files can be reprocessed only if they have metadata (new uploads) */}
-             {hasExcelMetadata && (record.status === 'error' || record.status === 'completed') ? (
-               <Button size="small" type={record.status === 'error' ? 'primary' : 'default'} onClick={() => handleReprocessExcel(record.id)}>
-                 {record.status === 'error' ? '重新处理' : '重新索引'}
-               </Button>
-             ) : null}
-             {/* Old Excel files without metadata show a message */}
-             {isExcelFile && !hasExcelMetadata && (record.status === 'error' || record.status === 'completed') ? (
-               <Tooltip title="旧文档缺少元数据，请删除后重新上传">
-                 <Button size="small" disabled>无法重新处理</Button>
-               </Tooltip>
-             ) : null}
-             {record.status === 'processing' ? (
-               <Tag icon={<ReloadOutlined spin />} color="processing">Processing</Tag>
-             ) : null}
-             {!isExcelFile && <Button size="small" onClick={() => handlePreview(record)}>Preview</Button>}
+             {/* PageIndex type handling */}
+             {isPageIndexType ? (
+               <>
+                 {record.status === 'pending' || record.status === 'error' ? (
+                   <Button size="small" type="primary" onClick={() => handlePageIndexProcess(record.id)}>处理</Button>
+                 ) : null}
+                 {record.status === 'completed' ? (
+                   <Button size="small" onClick={() => handleViewNodes(record)}>查看节点</Button>
+                 ) : null}
+                 {record.status === 'processing' ? (
+                   <Tag icon={<ReloadOutlined spin />} color="processing">处理中</Tag>
+                 ) : null}
+               </>
+             ) : (
+               <>
+                 {/* Non-PageIndex type handling */}
+                 {!isExcelFile && (record.status === 'pending' || record.status === 'error') ? (
+                   <Button size="small" type="primary" onClick={() => handleProcess(record.id)}>Process</Button>
+                 ) : null}
+                 {!isExcelFile && record.status === 'completed' ? (
+                   <Button size="small" onClick={() => handleProcess(record.id)}>Reindex</Button>
+                 ) : null}
+                 {hasExcelMetadata && (record.status === 'error' || record.status === 'completed') ? (
+                   <Button size="small" type={record.status === 'error' ? 'primary' : 'default'} onClick={() => handleReprocessExcel(record.id)}>
+                     {record.status === 'error' ? '重新处理' : '重新索引'}
+                   </Button>
+                 ) : null}
+                 {isExcelFile && !hasExcelMetadata && (record.status === 'error' || record.status === 'completed') ? (
+                   <Tooltip title="旧文档缺少元数据，请删除后重新上传">
+                     <Button size="small" disabled>无法重新处理</Button>
+                   </Tooltip>
+                 ) : null}
+                 {record.status === 'processing' ? (
+                   <Tag icon={<ReloadOutlined spin />} color="processing">Processing</Tag>
+                 ) : null}
+                 {!isExcelFile && <Button size="small" onClick={() => handlePreview(record)}>Preview</Button>}
+               </>
+             )}
              <Tooltip title="Download Original">
                <Button
                   size="small"
@@ -399,6 +471,7 @@ const KnowledgeBaseDetail: React.FC = () => {
   if (!kb) return <div>Loading...</div>;
 
   const isExcelType = kb.type === 'excel';
+  const isPageIndexType = kb.type === 'pageindex';
 
   return (
     <div>
@@ -410,11 +483,13 @@ const KnowledgeBaseDetail: React.FC = () => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div>
                 <Title level={3}>
-                  {isExcelType ? <TableOutlined /> : <FileTextOutlined />} {kb.name}
+                  {isExcelType ? <TableOutlined /> :
+                   isPageIndexType ? <PartitionOutlined /> :
+                   <FileTextOutlined />} {kb.name}
                 </Title>
                 <Paragraph>
-                  <Tag color={isExcelType ? 'blue' : 'green'}>
-                    {isExcelType ? 'Excel表格类型' : '文本类型'}
+                  <Tag color={isExcelType ? 'blue' : isPageIndexType ? 'purple' : 'green'}>
+                    {isExcelType ? 'Excel表格类型' : isPageIndexType ? 'PageIndex' : '文本类型'}
                   </Tag>
                   {kb.description && <> - {kb.description}</>}
                 </Paragraph>
@@ -435,6 +510,14 @@ const KnowledgeBaseDetail: React.FC = () => {
                   上传Excel文件
                 </Button>
               </Space>
+            ) : isPageIndexType ? (
+              <Upload
+                beforeUpload={handlePageIndexUpload}
+                showUploadList={false}
+                accept=".pdf"
+              >
+                <Button icon={<UploadOutlined />} loading={pageindexUploading} type="primary">上传PDF文档</Button>
+              </Upload>
             ) : (
               <Upload
                 beforeUpload={handleUpload}
@@ -467,38 +550,94 @@ const KnowledgeBaseDetail: React.FC = () => {
                 children: (
                     <Card>
                         <Space.Compact style={{ width: '100%' }}>
-                            <Input 
-                                placeholder="Enter your query..." 
+                            <Input
+                                placeholder={isPageIndexType ? "输入搜索问题..." : "Enter your query..."}
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
-                                onPressEnter={handleSearch}
+                                onPressEnter={isPageIndexType ? handlePageIndexSearch : handleSearch}
                             />
-                            <InputNumber 
-                                min={1} 
-                                max={100} 
-                                value={searchTopK} 
-                                onChange={(value) => setSearchTopK(value || 10)} 
+                            <InputNumber
+                                min={1}
+                                max={100}
+                                value={searchTopK}
+                                onChange={(value) => setSearchTopK(value || 10)}
                                 style={{ width: 80 }}
                                 placeholder="Top K"
                             />
-                            <Button type="primary" icon={<SearchOutlined />} onClick={handleSearch} loading={searching}>Search</Button>
+                            <Button type="primary" icon={<SearchOutlined />} onClick={isPageIndexType ? handlePageIndexSearch : handleSearch} loading={searching}>
+                              {isPageIndexType ? '搜索' : 'Search'}
+                            </Button>
                         </Space.Compact>
-                        
+
                         <Divider />
-                        
-                        <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
+
+                        {isPageIndexType ? (
+                          // PageIndex 搜索结果
+                          <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                                {searchResults.map((item) => (
-                                    <Card key={`${item.id}-${Math.random()}`} size="small">
-                                        <Card.Meta
-                                            title={`Score: ${item.score.toFixed(4)}`}
-                                            description={item.content}
-                                        />
-                                        <div style={{ marginTop: '8px', fontSize: '12px', color: '#999' }}>Source: {item.metadata.source}</div>
-                                    </Card>
-                                ))}
+                              {pageindexSearchResults?.results.map((item, idx) => (
+                                <Card key={idx} size="small">
+                                  <Card.Meta
+                                    title={
+                                      <Space>
+                                        <Text strong>{item.node.title}</Text>
+                                        <Tag color="purple">第 {item.node.start_index}-{item.node.end_index} 页</Tag>
+                                      </Space>
+                                    }
+                                    description={
+                                      <div>
+                                        <div style={{ marginBottom: 8, color: '#666' }}>
+                                          <Text type="secondary">摘要: </Text>
+                                          {item.node.summary}
+                                        </div>
+                                        <div style={{
+                                          backgroundColor: '#f6f6f6',
+                                          padding: 12,
+                                          borderRadius: 4,
+                                          maxHeight: 200,
+                                          overflowY: 'auto',
+                                          whiteSpace: 'pre-wrap' as const
+                                        }}>
+                                          <Text>{item.page_content}</Text>
+                                        </div>
+                                      </div>
+                                    }
+                                  />
+                                </Card>
+                              ))}
+                              {pageindexSearchResults?.prompt && (
+                                <Card size="small" title="RAG Prompt" style={{ marginTop: 16 }}>
+                                  <div style={{
+                                    backgroundColor: '#f6f6f6',
+                                    padding: 12,
+                                    borderRadius: 4,
+                                    maxHeight: 300,
+                                    overflowY: 'auto',
+                                    whiteSpace: 'pre-wrap' as const,
+                                    fontSize: 12
+                                  }}>
+                                    {pageindexSearchResults.prompt}
+                                  </div>
+                                </Card>
+                              )}
                             </div>
-                        </div>
+                          </div>
+                        ) : (
+                          // 普通向量搜索结果
+                          <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                              {searchResults.map((item) => (
+                                <Card key={`${item.id}-${Math.random()}`} size="small">
+                                  <Card.Meta
+                                    title={`Score: ${item.score.toFixed(4)}`}
+                                    description={item.content}
+                                  />
+                                  <div style={{ marginTop: '8px', fontSize: '12px', color: '#999' }}>Source: {item.metadata.source}</div>
+                                </Card>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                     </Card>
                 )
             }
@@ -693,6 +832,59 @@ const KnowledgeBaseDetail: React.FC = () => {
               </Card>
             ))}
           </div>
+        )}
+      </Modal>
+
+      {/* PageIndex Nodes Modal */}
+      <Modal
+        title="PageIndex 结构化节点"
+        open={nodesModalVisible}
+        onCancel={() => setNodesModalVisible(false)}
+        footer={[
+          <Button key="close" onClick={() => setNodesModalVisible(false)}>
+            关闭
+          </Button>
+        ]}
+        width={800}
+      >
+        {nodesList ? (
+          <div style={{ maxHeight: '600px', overflowY: 'auto' }}>
+            <Descriptions size="small" column={2} style={{ marginBottom: 16 }}>
+              <Descriptions.Item label="文档名称">{nodesList.doc_name}</Descriptions.Item>
+              <Descriptions.Item label="总页数">{nodesList.total_pages}</Descriptions.Item>
+              <Descriptions.Item label="节点数量">{nodesList.structure?.length || 0}</Descriptions.Item>
+            </Descriptions>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              {nodesList.structure?.map((node: any, idx: number) => (
+                <Card key={idx} size="small" style={{ backgroundColor: '#fafafa' }}>
+                  <div style={{ marginBottom: 8 }}>
+                    <Tag color="purple">{node.node_id}</Tag>
+                    <Text strong style={{ marginLeft: 8 }}>{node.title}</Text>
+                  </div>
+                  <div style={{ marginBottom: 4 }}>
+                    <Text type="secondary">页码: </Text>
+                    <Tag>{node.start_index} - {node.end_index}</Tag>
+                  </div>
+                  <div>
+                    <Text type="secondary">摘要: </Text>
+                    <div style={{
+                      backgroundColor: '#f6f6f6',
+                      padding: 8,
+                      borderRadius: 4,
+                      marginTop: 4,
+                      fontSize: 12,
+                      maxHeight: 100,
+                      overflowY: 'auto'
+                    }}>
+                      {node.summary}
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div>加载中...</div>
         )}
       </Modal>
     </div>

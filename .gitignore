@@ -1,6 +1,7 @@
 *.pyc
 volumes/etcd/member/snap/
 volumes/etcd/member/wal/
+volumes/etcd/member/
 .env
 */.env
 OpenManus/workspace/*

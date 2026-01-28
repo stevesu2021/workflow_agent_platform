@@ -17,7 +17,7 @@ export interface KnowledgeBase {
   id: string;
   name: string;
   description?: string;
-  type: 'text' | 'excel';
+  type: 'text' | 'excel' | 'pageindex';
   is_published: boolean;
   created_at: string;
   updated_at: string;
@@ -28,7 +28,7 @@ export interface KnowledgeBase {
 export interface KnowledgeBaseCreate {
   name: string;
   description?: string;
-  type?: 'text' | 'excel';
+  type?: 'text' | 'excel' | 'pageindex';
 }
 
 export interface SearchResult {
@@ -36,4 +36,23 @@ export interface SearchResult {
   content: string;
   metadata: Record<string, any>;
   score: number;
+}
+
+export interface PageIndexNode {
+  title: string;
+  start_index: number;
+  end_index: number;
+  node_id: string;
+  summary: string;
+}
+
+export interface PageIndexSearchResult {
+  node: PageIndexNode;
+  page_content: string;
+  score: number;
+}
+
+export interface PageIndexSearchResponse {
+  results: PageIndexSearchResult[];
+  prompt?: string;
 }

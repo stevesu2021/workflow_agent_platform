@@ -7,10 +7,10 @@ class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite+aiosqlite:///./agentflow.db"
     SECRET_KEY: str = "supersecretkey"
     
-    # MinIO Settings
-    MINIO_ENDPOINT: str = "localhost:9000"
+    # MinIO Settings - using existing coze-minio instance
+    MINIO_ENDPOINT: str = "localhost:32777"
     MINIO_ACCESS_KEY: str = "minioadmin"
-    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin123"
     MINIO_BUCKET: str = "agentflow-data"
     MINIO_SECURE: bool = False
     
