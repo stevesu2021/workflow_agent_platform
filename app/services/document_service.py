@@ -42,12 +42,47 @@ class DocumentService:
         Load, split, and index document. Returns chunk count.
         """
         try:
-            # 1. Check for PaddleOCR resource
+            # 0. Fetch KnowledgeBase to get parser_type
+            from app.models.knowledge import KnowledgeBase
+            kb = await session.get(KnowledgeBase, document.knowledge_base_id)
+            parser_type = kb.parser_type if kb else "PaddleOCR"
+
+            # 1. Check for parser resource
             ai_service = AiResourceService(session)
-            ocr_resources = await ai_service.list_resources(type_filter="ocr_paddle", only_enabled=True)
+            # Map user-friendly names to resource types
+            parser_type_map = {
+                "DeepSeek OCR": "ocr_deepseek",
+                "PaddleOCR": "ocr_paddle",
+                "Vision LLM": "vision_llm",
+                "MinerU": "mineru"
+            }
+            resource_type = parser_type_map.get(parser_type, "ocr_paddle")
+            
+            ocr_resources = await ai_service.list_resources(type_filter=resource_type, only_enabled=True)
             ocr_resource = ocr_resources[0] if ocr_resources else None
 
             # 2. Load
+            if kb and kb.type == "pageindex" and document.file_type == "pdf":
+                from app.services.pageindex_service import pageindex_service
+                # Need local file path
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                    tmp_path = tmp.name
+                try:
+                    minio_service.download_file(document.file_path, tmp_path)
+                    result = await pageindex_service.process_pdf_document(
+                        file_path=tmp_path,
+                        filename=document.filename,
+                        kb_id=str(kb.id),
+                        doc_id=str(document.id),
+                        session=session
+                    )
+                    if not result.get("success"):
+                        raise Exception(result.get("error", "PageIndex processing failed"))
+                    return result.get("node_count", 0)
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+            
             text = await self._load_file_content(document.file_path, document.file_type, ocr_resource)
             
             # Save parsed markdown/text to MinIO
@@ -137,9 +172,14 @@ class DocumentService:
             # If OCR resource is available and file is PDF, use OCR
             if ocr_resource and file_type == "pdf":
                 try:
-                    return await self._run_paddleocr(tmp_path, ocr_resource.endpoint)
+                    if ocr_resource.type == "ocr_paddle":
+                        return await self._run_paddleocr(tmp_path, ocr_resource.endpoint)
+                    elif ocr_resource.type == "mineru":
+                        return await self._run_mineru(tmp_path, ocr_resource.endpoint)
+                    elif ocr_resource.type in ["ocr_deepseek", "vision_llm"]:
+                        return await self._run_vision_llm_parser(tmp_path, ocr_resource)
                 except Exception as e:
-                    print(f"OCR failed, falling back to standard loader: {e}")
+                    print(f"OCR/Parser failed, falling back to standard loader: {e}")
                     # Fallback to standard loader if OCR fails
             
             if file_type == "pdf":
@@ -187,5 +227,59 @@ class DocumentService:
                 raise Exception(result.get("message", "Unknown error"))
         except json.JSONDecodeError:
             raise Exception(f"Invalid JSON output from OCR script: {stdout.decode()}")
+
+    async def _run_mineru(self, file_path: str, endpoint: str) -> str:
+        """
+        Run MinerU parser via API.
+        """
+        import httpx
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            with open(file_path, "rb") as f:
+                files = {"file": f}
+                response = await client.post(endpoint, files=files)
+                if response.is_success:
+                    result = response.json()
+                    return result.get("markdown") or result.get("content") or ""
+                else:
+                    raise Exception(f"MinerU API failed: {response.text}")
+
+    async def _run_vision_llm_parser(self, file_path: str, resource) -> str:
+        """
+        Run Vision LLM parser via API.
+        """
+        import httpx
+        import base64
+        
+        # For Vision LLM, we usually need to send images. 
+        # This is a simplified version that sends the file directly if the API supports it,
+        # or you might need a more complex implementation to split PDF to images.
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            with open(file_path, "rb") as f:
+                encoded_file = base64.b64encode(f.read()).decode('utf-8')
+                
+            payload = {
+                "model": resource.name,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Please parse this PDF and return its content in markdown format."},
+                            {"type": "file", "data": encoded_file, "mime_type": "application/pdf"}
+                        ]
+                    }
+                ]
+            }
+            
+            headers = {}
+            if resource.api_key:
+                headers["Authorization"] = f"Bearer {resource.api_key}"
+                
+            response = await client.post(resource.endpoint, json=payload, headers=headers)
+            if response.is_success:
+                result = response.json()
+                # Extract content from LLM response
+                return result["choices"][0]["message"]["content"]
+            else:
+                raise Exception(f"Vision LLM API failed: {response.text}")
 
 document_service = DocumentService()

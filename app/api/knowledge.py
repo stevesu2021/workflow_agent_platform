@@ -117,6 +117,7 @@ async def list_knowledge_bases(
             name=kb.name,
             description=kb.description,
             type=kb.type,
+            parser_type=kb.parser_type,
             is_published=kb.is_published,
             document_count=doc_count,
             group_id=kb.group_id,
@@ -142,6 +143,7 @@ async def create_knowledge_base(
         name=kb.name,
         description=kb.description,
         type=kb.type,
+        parser_type=kb.parser_type,
         group_id=kb.group_id,
         is_published=kb.is_published,
         created_at=kb.created_at,
@@ -187,6 +189,7 @@ async def get_knowledge_base(
         name=kb.name,
         description=kb.description,
         type=kb.type,
+        parser_type=kb.parser_type,
         group_id=kb.group_id,
         is_published=kb.is_published,
         created_at=kb.created_at,
@@ -239,6 +242,7 @@ async def publish_knowledge_base(
         name=kb.name,
         description=kb.description,
         type=kb.type,
+        parser_type=kb.parser_type,
         group_id=kb.group_id,
         is_published=kb.is_published,
         created_at=kb.created_at,
@@ -281,6 +285,7 @@ async def unpublish_knowledge_base(
         name=kb.name,
         description=kb.description,
         type=kb.type,
+        parser_type=kb.parser_type,
         group_id=kb.group_id,
         is_published=kb.is_published,
         created_at=kb.created_at,
@@ -328,6 +333,7 @@ async def update_knowledge_base(
         name=kb.name,
         description=kb.description,
         type=kb.type,
+        parser_type=kb.parser_type,
         group_id=kb.group_id,
         is_published=kb.is_published,
         created_at=kb.created_at,
@@ -641,6 +647,27 @@ async def get_document_chunks(
     if doc.knowledge_base_id != kb_id:
         raise HTTPException(status_code=400, detail="Document does not belong to this Knowledge Base")
 
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+
+    # For PageIndex type, we get nodes from MinIO instead of Milvus
+    if kb.type == "pageindex":
+        index_data, _ = await pageindex_service.load_index_data(str(kb_id), str(doc_id))
+        if not index_data:
+            return []
+        
+        structure = index_data.get("structure", [])
+        chunk_results = []
+        for node in structure:
+            chunk_results.append(SearchResult(
+                id=node.get("node_id", str(uuid.uuid4())),
+                content=json.dumps(node, ensure_ascii=False, indent=2),
+                metadata=node,
+                score=0.0
+            ))
+        return chunk_results
+
     # Sanitize KB ID for Milvus (replace hyphens with underscores)
     sanitized_kb_id = str(kb_id).replace("-", "_")
     collection_name = f"kb_{sanitized_kb_id}"
@@ -658,25 +685,45 @@ async def get_document_chunks(
         col.load()
 
         # Try with document_id filter first (new data)
-        results = col.query(expr=f'document_id == "{doc_id}"', output_fields=["text", "chunk_id", "pk", "row_index", "full_data", "document_id"])
+        # Explicitly request common fields to ensure they are returned
+        output_fields = ["*"] # Try to get all scalar fields
+        try:
+            results = col.query(expr=f'document_id == "{doc_id}"', output_fields=output_fields)
+        except:
+            # Fallback if "*" is not supported
+            output_fields = ["text", "content", "page_content", "chunk_id", "document_id", "row_index", "full_data", "source"]
+            results = col.query(expr=f'document_id == "{doc_id}"', output_fields=output_fields)
 
         # If empty, it might be old data without document_id field
-        # Try getting all data for Excel files
         if not results and doc.file_type in ["xlsx", "xls"]:
-            results = col.query(expr="", limit=1000, output_fields=["text", "chunk_id", "pk", "row_index", "full_data", "document_id"])
+            try:
+                results = col.query(expr="", output_fields=["*"])
+            except:
+                results = col.query(expr="", output_fields=output_fields)
 
         # Map results to SearchResult
         chunk_results = []
         for item in results:
             # Get text content - might be in different fields
-            text_content = item.get("text", "")
+            # Check common fields: 'text', 'content', 'page_content'
+            text_content = item.get("text") or item.get("content") or item.get("page_content") or ""
 
             # If no text field, try to construct from metadata
             if not text_content:
                 # For Excel data, construct from row data
                 row_data = item.get("full_data", {})
                 if row_data:
-                    text_content = " ".join([f"{k}: {v}" for k, v in row_data.items() if v])
+                    # Handle both dict and string
+                    if isinstance(row_data, str):
+                        try:
+                            row_data = json.loads(row_data)
+                        except:
+                            pass
+                    
+                    if isinstance(row_data, dict):
+                         text_content = " ".join([f"{k}: {v}" for k, v in row_data.items() if v])
+                    else:
+                         text_content = str(row_data)
 
             chunk_results.append(SearchResult(
                 id=str(item.get("chunk_id", item.get("pk", ""))),
@@ -694,7 +741,10 @@ async def get_document_chunks(
             from pymilvus import Collection
             col = Collection(collection_name)
             col.load()
-            results = col.query(expr="", limit=1000, output_fields=["text", "chunk_id", "pk", "row_index", "full_data", "document_id"])
+            try:
+                results = col.query(expr="", output_fields=["*"])
+            except:
+                results = col.query(expr="", output_fields=["text", "content", "page_content", "chunk_id", "document_id", "row_index", "full_data", "source"])
 
             chunk_results = []
             for item in results:
@@ -702,7 +752,17 @@ async def get_document_chunks(
                 if not text_content:
                     row_data = item.get("full_data", {})
                     if row_data:
-                        text_content = " ".join([f"{k}: {v}" for k, v in row_data.items() if v])
+                        # Handle both dict and string
+                        if isinstance(row_data, str):
+                            try:
+                                row_data = json.loads(row_data)
+                            except:
+                                pass
+                                
+                        if isinstance(row_data, dict):
+                            text_content = " ".join([f"{k}: {v}" for k, v in row_data.items() if v])
+                        else:
+                            text_content = str(row_data)
 
                 chunk_results.append(SearchResult(
                     id=str(item.get("chunk_id", item.get("pk", ""))),
@@ -854,8 +914,6 @@ async def upload_excel_document(
         metadata_columns: Optional JSON string of column names to use for metadata.
                          If not provided, all columns will be used.
     """
-    import json
-
     kb = await session.get(KnowledgeBase, kb_id)
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge Base not found")
@@ -1162,7 +1220,8 @@ async def process_pageindex_task(doc_id: uuid.UUID, kb_id: uuid.UUID, session_fa
                 file_path=tmp_path,
                 filename=doc.filename,
                 kb_id=str(kb_id),
-                doc_id=str(doc_id)
+                doc_id=str(doc_id),
+                session=session
             )
 
             # 清理临时文件

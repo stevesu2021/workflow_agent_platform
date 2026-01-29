@@ -29,6 +29,7 @@ const KnowledgeBaseList: React.FC = () => {
   const [currentKnowledgeBase, setCurrentKnowledgeBase] = useState<KnowledgeBase | null>(null);
   
   const [form] = Form.useForm();
+  const typeValue = Form.useWatch('type', form);
   const [groupForm] = Form.useForm();
   const [addToGroupForm] = Form.useForm();
   
@@ -452,6 +453,30 @@ const KnowledgeBaseList: React.FC = () => {
                 </Select.Option>
               </Select>
             </Form.Item>
+            {(typeValue === 'text' || typeValue === 'pageindex') && (
+              <Form.Item 
+                name="parser_type" 
+                label="文档解析工具" 
+                rules={[{ required: true, message: '请选择文档解析工具' }]}
+                initialValue="PaddleOCR"
+                tooltip="该工具将用于解析 PDF 文件内容"
+              >
+                <Select>
+                  <Select.Option value="DeepSeek OCR">
+                    <RocketOutlined /> DeepSeek OCR (系统资源)
+                  </Select.Option>
+                  <Select.Option value="PaddleOCR">
+                    <RocketOutlined /> PaddleOCR (系统资源)
+                  </Select.Option>
+                  <Select.Option value="Vision LLM">
+                    <RocketOutlined /> Vision LLM (系统资源)
+                  </Select.Option>
+                  <Select.Option value="MinerU">
+                    <RocketOutlined /> MinerU (系统资源)
+                  </Select.Option>
+                </Select>
+              </Form.Item>
+            )}
             <Form.Item name="description" label="描述">
               <Input.TextArea placeholder="请输入知识库描述" rows={3} />
             </Form.Item>

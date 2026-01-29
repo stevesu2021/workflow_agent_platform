@@ -26,6 +26,7 @@ export interface KnowledgeBase {
   name: string;
   description?: string;
   type: 'text' | 'excel' | 'pageindex';
+  parser_type?: string;
   is_published: boolean;
   group_id?: string;
   group_name?: string;
@@ -39,6 +40,7 @@ export interface KnowledgeBaseCreate {
   name: string;
   description?: string;
   type?: 'text' | 'excel' | 'pageindex';
+  parser_type?: string;
   group_id?: string;
 }
 

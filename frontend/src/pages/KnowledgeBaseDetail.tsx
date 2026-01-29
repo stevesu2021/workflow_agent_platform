@@ -699,8 +699,17 @@ const KnowledgeBaseDetail: React.FC = () => {
                     title: 'Content',
                     dataIndex: 'content',
                     render: (text: string) => (
-                        <div style={{ maxHeight: 100, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
-                            {text}
+                        <div style={{ 
+                            maxHeight: 200, 
+                            overflowY: 'auto', 
+                            whiteSpace: 'pre-wrap',
+                            backgroundColor: '#f5f5f5',
+                            padding: '8px',
+                            borderRadius: '4px',
+                            fontSize: '12px',
+                            fontFamily: 'monospace'
+                        }}>
+                            {text || <span style={{ color: '#ccc', fontStyle: 'italic' }}>No content available</span>}
                         </div>
                     )
                 }

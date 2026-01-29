@@ -28,6 +28,7 @@ class KnowledgeBase(SQLModel, table=True):
     name: str = Field(index=True)
     description: Optional[str] = None
     type: str = Field(default=KnowledgeBaseType.TEXT, index=True)  # text or excel
+    parser_type: Optional[str] = Field(default="PaddleOCR") # DeepSeek OCR, PaddleOCR, Vision LLM, MinerU
     is_published: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)

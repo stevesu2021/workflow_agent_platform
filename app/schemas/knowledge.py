@@ -7,6 +7,7 @@ class KnowledgeBaseBase(BaseModel):
     name: str
     description: Optional[str] = None
     type: str = "text"  # text, excel, or pageindex
+    parser_type: Optional[str] = "PaddleOCR"
     group_id: Optional[uuid.UUID] = None
 
 class KnowledgeBaseCreate(KnowledgeBaseBase):
@@ -16,6 +17,7 @@ class KnowledgeBaseUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     type: Optional[str] = None
+    parser_type: Optional[str] = None
     group_id: Optional[uuid.UUID] = None
 
 class KnowledgeBaseGroupBase(BaseModel):
@@ -62,6 +64,7 @@ class KnowledgeBaseListResponse(BaseModel):
     name: str
     description: Optional[str]
     type: str
+    parser_type: Optional[str]
     is_published: bool
     document_count: int
     group_id: Optional[uuid.UUID]

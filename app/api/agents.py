@@ -25,6 +25,10 @@ async def generate_agent(request: GenerateRequest):
 @router.post("/", response_model=AgentResponse)
 async def create_agent(agent: AgentCreate, session: AsyncSession = Depends(get_session)):
     service = AgentService(session)
+    # If prompt is a dict (JSON), format it as a readable string
+    if isinstance(agent.description, dict):
+        agent.description = json.dumps(agent.description, ensure_ascii=False, indent=2)
+
     # Ensure flow_json is a dict
     if hasattr(agent.flow_json, 'model_dump'):
         flow_json = agent.flow_json.model_dump()
@@ -89,6 +93,10 @@ async def get_agent(agent_id: uuid.UUID, session: AsyncSession = Depends(get_ses
 @router.put("/{agent_id}", response_model=AgentResponse)
 async def update_agent(agent_id: uuid.UUID, agent: AgentCreate, session: AsyncSession = Depends(get_session)):
     service = AgentService(session)
+    # If prompt is a dict (JSON), format it as a readable string
+    if isinstance(agent.description, dict):
+        agent.description = json.dumps(agent.description, ensure_ascii=False, indent=2)
+
     # Ensure flow_json is a dict
     if hasattr(agent.flow_json, 'model_dump'):
         flow_json = agent.flow_json.model_dump()
@@ -533,7 +541,6 @@ async def generate_and_run_agent(
                 # For file type, default_value is JSON with file info
                 if field_type == "file":
                     try:
-                        import json
                         file_info = json.loads(default_value)
                         # Store file info, will be processed during resource setup
                         default_inputs[field_name] = file_info

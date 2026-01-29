@@ -34,6 +34,47 @@ class PageIndexService:
     def __init__(self):
         self.index_base_dir = tempfile.gettempdir()
 
+    async def _extract_text_from_pdf_enhanced(self, pdf_path: str, ocr_resource=None) -> List[Dict[str, Any]]:
+        """
+        提取 PDF 内容，如果提供 OCR 资源则使用 OCR，否则使用标准库
+        """
+        if ocr_resource:
+            from app.services.document_service import document_service
+            try:
+                # Use document_service parsers
+                if ocr_resource.type == "ocr_paddle":
+                    text = await document_service._run_paddleocr(pdf_path, ocr_resource.endpoint)
+                elif ocr_resource.type == "mineru":
+                    text = await document_service._run_mineru(pdf_path, ocr_resource.endpoint)
+                elif ocr_resource.type in ["ocr_deepseek", "vision_llm"]:
+                    text = await document_service._run_vision_llm_parser(pdf_path, ocr_resource)
+                else:
+                    text = None
+                
+                if text:
+                    # Simple strategy: treat the whole text as page 1 if we can't easily split
+                    # Better: split by common page markers like "--- 第 X 页 ---"
+                    pages = []
+                    parts = re.split(r'--- 第 \d+ 页 ---', text)
+                    if len(parts) > 1:
+                        for i, part in enumerate(parts[1:], 1):
+                            pages.append({
+                                "page_num": i,
+                                "text": part.strip(),
+                                "char_count": len(part.strip())
+                            })
+                    else:
+                        pages.append({
+                            "page_num": 1,
+                            "text": text,
+                            "char_count": len(text)
+                        })
+                    return pages
+            except Exception as e:
+                print(f"[PageIndex] Enhanced extraction failed: {e}, falling back to standard.")
+
+        return self._extract_text_from_pdf(pdf_path)
+
     def _extract_text_from_pdf(self, pdf_path: str) -> List[Dict[str, Any]]:
         """
         从 PDF 提取文本内容，按页返回
@@ -190,16 +231,47 @@ class PageIndexService:
         file_path: str,
         filename: str,
         kb_id: str,
-        doc_id: str
+        doc_id: str,
+        session: Optional[AsyncSession] = None
     ) -> Dict[str, Any]:
         """
         处理 PDF 文档，生成结构化索引
         """
         try:
             print(f"[PageIndex] Processing {filename}...")
+            
+            # Get parser_type from KB if session provided
+            parser_type = "PaddleOCR"
+            if session:
+                from app.models.knowledge import KnowledgeBase
+                kb = await session.get(KnowledgeBase, uuid.UUID(kb_id))
+                if kb:
+                    parser_type = kb.parser_type
+            
+            # Check for parser resource
+            from app.services.ai_resource_service import AiResourceService
+            from app.services.document_service import document_service
+            
+            ocr_resource = None
+            if session:
+                ai_service = AiResourceService(session)
+                parser_type_map = {
+                    "DeepSeek OCR": "ocr_deepseek",
+                    "PaddleOCR": "ocr_paddle",
+                    "Vision LLM": "vision_llm",
+                    "MinerU": "mineru"
+                }
+                resource_type = parser_type_map.get(parser_type, "ocr_paddle")
+                ocr_resources = await ai_service.list_resources(type_filter=resource_type, only_enabled=True)
+                ocr_resource = ocr_resources[0] if ocr_resources else None
 
             # 1. 提取页面内容
-            page_contents = self._extract_text_from_pdf(file_path)
+            # If ocr_resource is available, we should ideally use it.
+            # However, _extract_text_from_pdf currently only uses pdfplumber/PyPDF2.
+            # For PageIndex, we need page-by-page text.
+            # Let's adapt _extract_text_from_pdf to handle OCR if available.
+            
+            page_contents = await self._extract_text_from_pdf_enhanced(file_path, ocr_resource)
 
             if not page_contents:
                 return {
