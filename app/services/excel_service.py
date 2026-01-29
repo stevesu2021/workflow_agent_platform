@@ -8,6 +8,8 @@ import os
 import logging
 import pandas as pd
 import uuid
+import re
+import json
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
@@ -47,6 +49,29 @@ class ExcelKnowledgeService:
             logger.error(f"Error reading Excel file {file_path}: {e}")
             raise
 
+    def sanitize_field_name(self, name: str) -> str:
+        """
+        Sanitize field names for Milvus.
+        Milvus field names must:
+        - Start with an underscore or letter
+        - Only contain letters, numbers, and underscores
+        """
+        # Replace non-alphanumeric with underscore
+        sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', name)
+        
+        # If it starts with a digit, prepend an underscore
+        if sanitized and sanitized[0].isdigit():
+            sanitized = '_' + sanitized
+            
+        # If it's empty or only underscores (common for all-Chinese names), 
+        # use a deterministic hash to ensure the field name is consistent across rows
+        if not sanitized.strip('_'):
+            import hashlib
+            name_hash = hashlib.md5(name.encode()).hexdigest()[:8]
+            sanitized = f"field_{name_hash}"
+            
+        return sanitized
+
     def process_excel_row(
         self,
         row_data: Dict[str, str],
@@ -65,31 +90,29 @@ class ExcelKnowledgeService:
         Returns:
             Dictionary containing text content and metadata
         """
-        # Extract metadata (only specified columns)
-        metadata = {}
+        # Create text representation by combining metadata fields
+        # This is what will be embedded for vector search
+        # We use original column names here for the text content
+        text_parts = []
         for col in metadata_columns:
             if col in row_data:
                 value = row_data[col]
-                metadata[col] = str(value) if pd.notna(value) else ""
+                if pd.notna(value) and str(value).strip():
+                    text_parts.append(f"{col}: {value}")
+        text_content = "\n".join(text_parts)
 
-        # Create text representation by combining metadata fields
-        # This is what will be embedded for vector search
-        text_parts = []
-        for key, value in metadata.items():
-            if value:  # Only include non-empty values
-                text_parts.append(f"{key}: {value}")
-        text_content = " ".join(text_parts)
-
-        # Store all row data as JSON in metadata for retrieval
+        # Build full row data for storage
         full_data = {}
         for col, value in row_data.items():
             full_data[col] = str(value) if pd.notna(value) else ""
 
-        # Build metadata with document_id if provided
+        # Build metadata with FIXED fields only to ensure stable Milvus schema
+        # regardless of Excel column changes.
         result_metadata = {
-            **metadata,
             "row_index": str(row_index),
-            "full_data": full_data,
+            # Store full_data as a JSON string to avoid invalid field names in Milvus
+            # and to prevent flattening of nested structures.
+            "full_data": json.dumps(full_data, ensure_ascii=False),
             "source_type": "excel"
         }
         if doc_id:
@@ -167,12 +190,30 @@ class ExcelKnowledgeService:
 
             # Add to Milvus
             logger.info(f"Adding {len(texts)} vectors to Milvus collection: {collection_name}")
-            await self.vector_service.add_texts(
-                collection_name=collection_name,
-                texts=texts,
-                metadatas=metadatas,
-                ids=ids
-            )
+            try:
+                await self.vector_service.add_texts(
+                    collection_name=collection_name,
+                    texts=texts,
+                    metadatas=metadatas,
+                    ids=ids
+                )
+            except Exception as e:
+                # If we get a schema mismatch or alignment error, it's likely due to 
+                # a change in the Excel structure from a previous upload.
+                # In this case, we drop the collection and retry to recreate with new schema.
+                error_msg = str(e)
+                if "DataNotMatchException" in error_msg or "misaligned" in error_msg or "match with schema" in error_msg:
+                    logger.warning(f"Schema mismatch for collection {collection_name}, dropping and retrying: {e}")
+                    await self.vector_service.delete_collection(collection_name)
+                    # Retry once
+                    await self.vector_service.add_texts(
+                        collection_name=collection_name,
+                        texts=texts,
+                        metadatas=metadatas,
+                        ids=ids
+                    )
+                else:
+                    raise
 
             return {
                 "status": "success",

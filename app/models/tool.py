@@ -12,10 +12,3 @@ class Tool(SQLModel, table=True):
     type: str # 'api', 'function'
     config: Dict[str, Any] = Field(default={}, sa_column=Column(SQLiteJSON))
     created_at: datetime = Field(default_factory=datetime.utcnow)
-
-class KnowledgeBase(SQLModel, table=True):
-    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    name: str = Field(index=True)
-    description: Optional[str] = None
-    config: Dict[str, Any] = Field(default={}, sa_column=Column(SQLiteJSON))
-    created_at: datetime = Field(default_factory=datetime.utcnow)

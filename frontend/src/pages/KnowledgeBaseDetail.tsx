@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Button, Table, Upload, message, Input, List, Tag, Tabs, Space, Divider, Typography, Modal, Tooltip, InputNumber, Select, Form, Alert, Checkbox, Descriptions } from 'antd';
-import { UploadOutlined, SearchOutlined, ArrowLeftOutlined, ReloadOutlined, DownloadOutlined, FileMarkdownOutlined, TableOutlined, FileTextOutlined, EyeOutlined, PartitionOutlined } from '@ant-design/icons';
+import { UploadOutlined, SearchOutlined, ArrowLeftOutlined, ReloadOutlined, DownloadOutlined, FileMarkdownOutlined, TableOutlined, FileTextOutlined, EyeOutlined, PartitionOutlined, DeleteOutlined } from '@ant-design/icons';
 import { knowledgeApi } from '../api/knowledge';
 import type { KnowledgeBase, Document, SearchResult, PageIndexSearchResponse, PageIndexNode } from '../types/knowledge';
 
@@ -170,6 +170,26 @@ const KnowledgeBaseDetail: React.FC = () => {
     } finally {
       setPreviewLoading(false);
     }
+  };
+
+  const handleDeleteDocument = async (docId: string) => {
+    if (!id) return;
+    Modal.confirm({
+      title: '确定要删除该文档吗？',
+      content: '此操作将从知识库、存储和向量数据库中永久删除该文档。',
+      okText: '确定',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await knowledgeApi.deleteDocument(id, docId);
+          message.success('文档已删除');
+          fetchKb();
+        } catch (error) {
+          message.error('删除文档失败');
+        }
+      },
+    });
   };
 
   // Excel-specific handlers
@@ -462,6 +482,14 @@ const KnowledgeBaseDetail: React.FC = () => {
                   />
                </Tooltip>
              ) : null}
+             <Tooltip title="删除文档">
+               <Button
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={() => handleDeleteDocument(record.id)}
+               />
+             </Tooltip>
           </Space>
         );
       },

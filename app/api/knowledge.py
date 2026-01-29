@@ -7,13 +7,17 @@ from sqlmodel import select, desc
 import uuid
 import os
 import logging
+import json
+from datetime import datetime
 
 from app.core.database import get_session
-from app.models.knowledge import KnowledgeBase, Document
+from app.models.knowledge import KnowledgeBase, Document, KnowledgeBaseGroup
 from app.schemas.knowledge import (
     KnowledgeBaseCreate, KnowledgeBaseResponse, KnowledgeBaseListResponse, KnowledgeBaseUpdate,
+    KnowledgeBaseGroupCreate, KnowledgeBaseGroupResponse, KnowledgeBaseGroupUpdate,
     DocumentResponse, SearchRequest, SearchResponse, SearchResult,
-    PageIndexSearchResponse, PageIndexSearchResult, PageIndexNode
+    PageIndexSearchResponse, PageIndexSearchResult, PageIndexNode,
+    BatchDeleteRequest
 )
 from app.services.document_service import document_service
 from app.services.vector_service import vector_service
@@ -24,14 +28,75 @@ from app.services.pageindex_service import pageindex_service
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-@router.get("/", response_model=List[KnowledgeBaseListResponse])
-async def list_knowledge_bases(
+@router.get("/groups", response_model=List[KnowledgeBaseGroupResponse])
+async def list_groups(
     session: AsyncSession = Depends(get_session)
 ):
-    # Join with Document to count documents? 
-    # For simplicity, we'll fetch all and count in python or do a subquery.
-    # Let's just fetch KBs and populate counts.
-    result = await session.execute(select(KnowledgeBase).order_by(desc(KnowledgeBase.created_at)))
+    result = await session.execute(select(KnowledgeBaseGroup).order_by(desc(KnowledgeBaseGroup.created_at)))
+    return result.scalars().all()
+
+@router.post("/groups", response_model=KnowledgeBaseGroupResponse)
+async def create_group(
+    group_create: KnowledgeBaseGroupCreate,
+    session: AsyncSession = Depends(get_session)
+):
+    group = KnowledgeBaseGroup.from_orm(group_create)
+    session.add(group)
+    await session.commit()
+    await session.refresh(group)
+    return group
+
+@router.put("/groups/{group_id}", response_model=KnowledgeBaseGroupResponse)
+async def update_group(
+    group_id: uuid.UUID,
+    group_update: KnowledgeBaseGroupUpdate,
+    session: AsyncSession = Depends(get_session)
+):
+    group = await session.get(KnowledgeBaseGroup, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    update_data = group_update.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(group, key, value)
+    
+    session.add(group)
+    await session.commit()
+    await session.refresh(group)
+    return group
+
+@router.delete("/groups/{group_id}")
+async def delete_group(
+    group_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session)
+):
+    group = await session.get(KnowledgeBaseGroup, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+    
+    # Update all knowledge bases in this group to have no group
+    result = await session.execute(
+        select(KnowledgeBase).where(KnowledgeBase.group_id == group_id)
+    )
+    kbs = result.scalars().all()
+    for kb in kbs:
+        kb.group_id = None
+        session.add(kb)
+    
+    await session.delete(group)
+    await session.commit()
+    return {"success": True}
+
+@router.get("/", response_model=List[KnowledgeBaseListResponse])
+async def list_knowledge_bases(
+    group_id: Optional[uuid.UUID] = None,
+    session: AsyncSession = Depends(get_session)
+):
+    query = select(KnowledgeBase)
+    if group_id:
+        query = query.where(KnowledgeBase.group_id == group_id)
+    
+    result = await session.execute(query.order_by(desc(KnowledgeBase.created_at)))
     kbs = result.scalars().all()
     
     response = []
@@ -40,6 +105,13 @@ async def list_knowledge_bases(
         doc_count_result = await session.execute(select(Document).where(Document.knowledge_base_id == kb.id))
         doc_count = len(doc_count_result.scalars().all())
         
+        # Get group name if exists
+        group_name = None
+        if kb.group_id:
+            group = await session.get(KnowledgeBaseGroup, kb.group_id)
+            if group:
+                group_name = group.name
+        
         response.append(KnowledgeBaseListResponse(
             id=kb.id,
             name=kb.name,
@@ -47,6 +119,8 @@ async def list_knowledge_bases(
             type=kb.type,
             is_published=kb.is_published,
             document_count=doc_count,
+            group_id=kb.group_id,
+            group_name=group_name,
             created_at=kb.created_at,
             updated_at=kb.updated_at
         ))
@@ -68,6 +142,7 @@ async def create_knowledge_base(
         name=kb.name,
         description=kb.description,
         type=kb.type,
+        group_id=kb.group_id,
         is_published=kb.is_published,
         created_at=kb.created_at,
         updated_at=kb.updated_at,
@@ -112,6 +187,7 @@ async def get_knowledge_base(
         name=kb.name,
         description=kb.description,
         type=kb.type,
+        group_id=kb.group_id,
         is_published=kb.is_published,
         created_at=kb.created_at,
         updated_at=kb.updated_at,
@@ -163,6 +239,7 @@ async def publish_knowledge_base(
         name=kb.name,
         description=kb.description,
         type=kb.type,
+        group_id=kb.group_id,
         is_published=kb.is_published,
         created_at=kb.created_at,
         updated_at=kb.updated_at,
@@ -204,6 +281,54 @@ async def unpublish_knowledge_base(
         name=kb.name,
         description=kb.description,
         type=kb.type,
+        group_id=kb.group_id,
+        is_published=kb.is_published,
+        created_at=kb.created_at,
+        updated_at=kb.updated_at,
+        documents=doc_responses
+    )
+
+@router.put("/{kb_id}", response_model=KnowledgeBaseResponse)
+async def update_knowledge_base(
+    kb_id: uuid.UUID,
+    kb_update: KnowledgeBaseUpdate,
+    session: AsyncSession = Depends(get_session)
+):
+    kb = await session.get(KnowledgeBase, kb_id)
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge Base not found")
+    
+    update_data = kb_update.dict(exclude_unset=True)
+    for key, value in update_data.items():
+        setattr(kb, key, value)
+    
+    kb.updated_at = datetime.utcnow()
+    session.add(kb)
+    await session.commit()
+    await session.refresh(kb)
+    
+    # Fetch docs
+    result = await session.execute(select(Document).where(Document.knowledge_base_id == kb_id))
+    documents = result.scalars().all()
+    
+    doc_responses = [DocumentResponse(
+        id=d.id,
+        knowledge_base_id=d.knowledge_base_id,
+        filename=d.filename,
+        file_type=d.file_type,
+        status=d.status,
+        error_message=d.error_message,
+        chunk_count=d.chunk_count,
+        created_at=d.created_at,
+        updated_at=d.updated_at
+    ) for d in documents]
+
+    return KnowledgeBaseResponse(
+        id=kb.id,
+        name=kb.name,
+        description=kb.description,
+        type=kb.type,
+        group_id=kb.group_id,
         is_published=kb.is_published,
         created_at=kb.created_at,
         updated_at=kb.updated_at,
@@ -242,6 +367,36 @@ async def delete_knowledge_base(
     await session.commit()
     return {"success": True}
 
+@router.post("/batch-delete")
+async def batch_delete_knowledge_bases(
+    request: BatchDeleteRequest,
+    session: AsyncSession = Depends(get_session)
+):
+    for kb_id in request.ids:
+        kb = await session.get(KnowledgeBase, kb_id)
+        if not kb:
+            continue
+
+        # First, delete all documents associated with this knowledge base
+        result = await session.execute(
+            select(Document).where(Document.knowledge_base_id == kb_id)
+        )
+        documents = result.scalars().all()
+
+        for doc in documents:
+            await session.delete(doc)
+
+        # Delete from vector store
+        sanitized_kb_id = str(kb_id).replace("-", "_")
+        collection_name = f"kb_{sanitized_kb_id}"
+        await vector_service.delete_collection(collection_name)
+
+        # Now delete the knowledge base
+        await session.delete(kb)
+        
+    await session.commit()
+    return {"success": True}
+
 @router.post("/{kb_id}/upload", response_model=DocumentResponse)
 async def upload_document(
     kb_id: uuid.UUID,
@@ -273,6 +428,50 @@ async def upload_document(
     await session.refresh(doc)
     
     return doc
+
+@router.delete("/{kb_id}/documents/{doc_id}")
+async def delete_document(
+    kb_id: uuid.UUID,
+    doc_id: uuid.UUID,
+    session: AsyncSession = Depends(get_session)
+):
+    doc = await session.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    if doc.knowledge_base_id != kb_id:
+        raise HTTPException(status_code=400, detail="Document does not belong to this Knowledge Base")
+    
+    # 1. Delete from vector store
+    try:
+        sanitized_kb_id = str(kb_id).replace("-", "_")
+        collection_name = f"kb_{sanitized_kb_id}"
+        # We store doc_id as document_id in metadata
+        await vector_service.delete_vectors(collection_name, f'document_id == "{doc_id}"')
+    except Exception as e:
+        logger.error(f"Error deleting vectors for document {doc_id}: {e}")
+        # Continue even if vector deletion fails
+    
+    # 2. Delete from MinIO
+    if doc.file_path:
+        try:
+            minio_service.delete_file(doc.file_path)
+        except Exception as e:
+            logger.error(f"Error deleting file from MinIO for document {doc_id}: {e}")
+            # Continue
+            
+    # Also delete parsed markdown if it exists
+    parsed_object_name = f"{str(kb_id)}/parsed/{doc.filename}.md"
+    try:
+        minio_service.delete_file(parsed_object_name)
+    except:
+        pass
+
+    # 3. Delete from database
+    await session.delete(doc)
+    await session.commit()
+    
+    return {"success": True}
 
 async def process_document_task(doc_id: uuid.UUID, session_factory):
     async with session_factory() as session:
@@ -550,9 +749,19 @@ async def search_knowledge_base(
                 for item in all_data:
                     text_content = item.get("text", "")
                     if not text_content:
-                        row_data = item.get("full_data", {})
-                        if row_data:
-                            text_content = " ".join([f"{k}: {v}" for k, v in row_data.items() if v])
+                        row_data_raw = item.get("full_data", {})
+                        row_data = {}
+                        if row_data_raw:
+                            try:
+                                if isinstance(row_data_raw, str):
+                                    row_data = json.loads(row_data_raw)
+                                else:
+                                    row_data = row_data_raw
+                                
+                                text_content = " ".join([f"{k}: {v}" for k, v in row_data.items() if v])
+                            except Exception as e:
+                                logger.error(f"Error parsing full_data: {e}")
+                                text_content = str(row_data_raw)
 
                     if query_lower in text_content.lower():
                         chunk_id = str(item.get("chunk_id", item.get("pk", "")))

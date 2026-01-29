@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "supersecretkey"
     
     # MinIO Settings - using existing coze-minio instance
-    MINIO_ENDPOINT: str = "localhost:32777"
+    MINIO_ENDPOINT: str = "localhost:32775"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin123"
     MINIO_BUCKET: str = "agentflow-data"

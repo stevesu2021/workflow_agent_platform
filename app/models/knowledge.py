@@ -10,6 +10,17 @@ class KnowledgeBaseType:
     EXCEL = "excel"
     PAGEINDEX = "pageindex"
 
+class KnowledgeBaseGroup(SQLModel, table=True):
+    __tablename__ = "knowledge_base_groups"
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    name: str = Field(index=True)
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    knowledge_bases: List["KnowledgeBase"] = Relationship(back_populates="group")
+
 class KnowledgeBase(SQLModel, table=True):
     __tablename__ = "knowledge_bases"
 
@@ -20,8 +31,11 @@ class KnowledgeBase(SQLModel, table=True):
     is_published: bool = Field(default=False)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    group_id: Optional[uuid.UUID] = Field(default=None, foreign_key="knowledge_base_groups.id")
 
     documents: List["Document"] = Relationship(back_populates="knowledge_base")
+    group: Optional[KnowledgeBaseGroup] = Relationship(back_populates="knowledge_bases")
 
 class Document(SQLModel, table=True):
     __tablename__ = "documents"

@@ -55,11 +55,32 @@ def migrate_document_metadata_column(conn):
         logger.error(f"Error migrating documents table: {e}")
         raise
 
+def migrate_knowledge_base_group_column(conn):
+    """Add group_id column to knowledge_bases table if it doesn't exist"""
+    try:
+        # Check if column exists
+        result = conn.execute(text("PRAGMA table_info(knowledge_bases)"))
+        columns = result.fetchall()
+        column_names = [col[1] for col in columns]
+
+        if 'group_id' not in column_names:
+            logger.info("Adding 'group_id' column to knowledge_bases table")
+            conn.execute(text(
+                "ALTER TABLE knowledge_bases ADD COLUMN group_id CHAR(32)"
+            ))
+            logger.info("Successfully added 'group_id' column to knowledge_bases table")
+        else:
+            logger.info("'group_id' column already exists in knowledge_bases table")
+    except Exception as e:
+        logger.error(f"Error migrating knowledge_bases table for group_id: {e}")
+        raise
+
 async def init_db():
     async with engine.begin() as conn:
         # Run migrations first
         await conn.run_sync(migrate_knowledge_base_type_column)
         await conn.run_sync(migrate_document_metadata_column)
+        await conn.run_sync(migrate_knowledge_base_group_column)
         # Then create all tables (this will skip existing tables)
         await conn.run_sync(SQLModel.metadata.create_all)
 

@@ -54,4 +54,7 @@ class MinioService:
     def get_object(self, object_name: str):
         return self.client.get_object(self.bucket, object_name)
 
+    def delete_file(self, object_name: str):
+        self.client.remove_object(self.bucket, object_name)
+
 minio_service = MinioService()

@@ -1,4 +1,4 @@
-import type { KnowledgeBase, KnowledgeBaseCreate, Document, SearchResult, PageIndexSearchResponse } from '../types/knowledge';
+import type { KnowledgeBase, KnowledgeBaseCreate, Document, SearchResult, PageIndexSearchResponse, KnowledgeBaseGroup } from '../types/knowledge';
 
 const handleResponse = async (response: Response) => {
   if (!response.ok) {
@@ -9,14 +9,24 @@ const handleResponse = async (response: Response) => {
 };
 
 export const knowledgeApi = {
-  list: async (): Promise<KnowledgeBase[]> => {
-    const response = await fetch('/api/knowledge-bases/');
+  list: async (groupId?: string): Promise<KnowledgeBase[]> => {
+    const url = groupId ? `/api/knowledge-bases/?group_id=${groupId}` : '/api/knowledge-bases/';
+    const response = await fetch(url);
     return handleResponse(response);
   },
 
   create: async (data: KnowledgeBaseCreate): Promise<KnowledgeBase> => {
     const response = await fetch('/api/knowledge-bases/', {
       method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return handleResponse(response);
+  },
+
+  update: async (id: string, data: Partial<KnowledgeBaseCreate>): Promise<KnowledgeBase> => {
+    const response = await fetch(`/api/knowledge-bases/${id}`, {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
@@ -35,12 +45,59 @@ export const knowledgeApi = {
     return handleResponse(response);
   },
 
+  batchDelete: async (ids: string[]): Promise<void> => {
+    const response = await fetch('/api/knowledge-bases/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    return handleResponse(response);
+  },
+
+  // Group APIs
+  listGroups: async (): Promise<KnowledgeBaseGroup[]> => {
+    const response = await fetch('/api/knowledge-bases/groups');
+    return handleResponse(response);
+  },
+
+  createGroup: async (data: { name: string; description?: string }): Promise<KnowledgeBaseGroup> => {
+    const response = await fetch('/api/knowledge-bases/groups', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return handleResponse(response);
+  },
+
+  updateGroup: async (id: string, data: { name?: string; description?: string }): Promise<KnowledgeBaseGroup> => {
+    const response = await fetch(`/api/knowledge-bases/groups/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return handleResponse(response);
+  },
+
+  deleteGroup: async (id: string): Promise<void> => {
+    const response = await fetch(`/api/knowledge-bases/groups/${id}`, {
+      method: 'DELETE',
+    });
+    return handleResponse(response);
+  },
+
   uploadDocument: async (id: string, file: File): Promise<Document> => {
     const formData = new FormData();
     formData.append('file', file);
     const response = await fetch(`/api/knowledge-bases/${id}/upload`, {
       method: 'POST',
       body: formData,
+    });
+    return handleResponse(response);
+  },
+
+  deleteDocument: async (kbId: string, docId: string): Promise<void> => {
+    const response = await fetch(`/api/knowledge-bases/${kbId}/documents/${docId}`, {
+      method: 'DELETE',
     });
     return handleResponse(response);
   },

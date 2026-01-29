@@ -13,12 +13,22 @@ export interface Document {
   updated_at: string;
 }
 
+export interface KnowledgeBaseGroup {
+  id: string;
+  name: string;
+  description?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface KnowledgeBase {
   id: string;
   name: string;
   description?: string;
   type: 'text' | 'excel' | 'pageindex';
   is_published: boolean;
+  group_id?: string;
+  group_name?: string;
   created_at: string;
   updated_at: string;
   document_count?: number;
@@ -29,6 +39,7 @@ export interface KnowledgeBaseCreate {
   name: string;
   description?: string;
   type?: 'text' | 'excel' | 'pageindex';
+  group_id?: string;
 }
 
 export interface SearchResult {
