@@ -26,7 +26,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) 
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState('');
   const [loading, setLoading] = useState(false);
-  
+
   // Drawer state
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [traceLogs, setTraceLogs] = useState<TraceLog[]>([]);
@@ -42,7 +42,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) 
     if (fileList.length > 0) {
         userMsg.content += `\n[File Uploaded: ${fileList[0].name}]`;
     }
-    
+
     setMessages(prev => [...prev, userMsg]);
     setInputValue('');
     setLoading(true);
@@ -56,22 +56,30 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) 
 
       // Prepare inputs
       const inputs: any = { input: inputValue };
-      
-      // If file, read content (simple text read for prototype)
+
+      // If file, upload to MinIO first
       if (fileList.length > 0) {
-          const file = fileList[0];
-          // Simple text reader
-          const text = await file.originFileObj?.text();
-          inputs.file_name = file.name;
-          inputs.file_content = text;
+          const formData = new FormData();
+          fileList.forEach((file: any) => {
+              formData.append('files', file.originFileObj);
+          });
+
+          // Upload files to MinIO
+          const uploadResponse = await axios.post('/api/agents/upload-file', formData, {
+              headers: { 'Content-Type': 'multipart/form-data' }
+          });
+
+          // Add file info to inputs
+          inputs.fileNames = uploadResponse.data.file_names;
+          inputs.fileUrls = uploadResponse.data.file_urls;
       }
 
       const response = await axios.post(`/api/agents/${id}/run`, {
         inputs: inputs
       });
-      
+
       setFileList([]); // Clear file after send
-      
+
       // Update logs
       if (response.data.trace_logs) {
           setTraceLogs(response.data.trace_logs);
@@ -79,14 +87,14 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) 
               onRunComplete(response.data.trace_logs);
           }
       }
-      
+
       let outputContent = '';
       if (typeof response.data.output === 'string') {
-          outputContent = response.data.output;
+        outputContent = response.data.output;
       } else if (response.data.output && response.data.output.content) {
-          outputContent = response.data.output.content;
+        outputContent = response.data.output.content;
       } else {
-          outputContent = JSON.stringify(response.data.output);
+        outputContent = JSON.stringify(response.data.output);
       }
 
       const agentMsg: Message = { role: 'agent', content: outputContent };
@@ -99,7 +107,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) 
       setLoading(false);
     }
   };
-  
+
   const [fileList, setFileList] = useState<any[]>([]);
 
   return (
@@ -115,9 +123,9 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) 
                 </Card>
             ))}
         </div>
-        <Button 
-            icon={<BugOutlined />} 
-            onClick={() => setDrawerVisible(true)} 
+        <Button
+            icon={<BugOutlined />}
+            onClick={() => setDrawerVisible(true)}
             style={{ marginTop: '16px', width: '100%' }}
         >
             查看运行日志
@@ -136,16 +144,16 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
             {messages.map((msg, index) => (
               <div key={index} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                <div style={{ 
-                  maxWidth: '70%', 
-                  padding: '8px 12px', 
-                  borderRadius: '8px', 
+                <div style={{
+                  maxWidth: '70%',
+                  padding: '8px 12px',
+                  borderRadius: '8px',
                   backgroundColor: msg.role === 'user' ? '#1890ff' : '#f5f5f5',
                   color: msg.role === 'user' ? '#fff' : '#333',
                   boxShadow: '0 1px 2px rgba(0,0,0,0.1)'
                 }}>
                   <div style={{ fontWeight: 'bold', marginBottom: '4px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                     {msg.role === 'user' ? <UserOutlined /> : <RobotOutlined />} 
+                     {msg.role === 'user' ? <UserOutlined /> : <RobotOutlined />}
                      {msg.role === 'user' ? 'User' : 'Agent'}
                   </div>
                   <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{msg.content}</div>
@@ -154,20 +162,20 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) 
             ))}
           </div>
         </div>
-        
+
         <div style={{ display: 'flex', gap: '8px' }}>
-            <Upload 
-                beforeUpload={() => false} 
+            <Upload
+                beforeUpload={() => false}
                 maxCount={1}
                 fileList={fileList}
                 onChange={({ fileList }) => setFileList(fileList)}
             >
                 <Button icon={<UploadOutlined />}>上传文件</Button>
             </Upload>
-            <Input.TextArea 
-                value={inputValue} 
-                onChange={e => setInputValue(e.target.value)} 
-                placeholder="请输入测试内容..." 
+            <Input.TextArea
+                value={inputValue}
+                onChange={e => setInputValue(e.target.value)}
+                placeholder="请输入测试内容..."
                 autoSize={{ minRows: 1, maxRows: 4 }}
                 onPressEnter={(e) => {
                     if (!e.shiftKey) {
@@ -181,7 +189,7 @@ export const DebugPanel: React.FC<DebugPanelProps> = ({ nodes, onRunComplete }) 
             </Button>
         </div>
       </div>
-      
+
       <Drawer
         title="Engine Execution Trace"
         placement="right"

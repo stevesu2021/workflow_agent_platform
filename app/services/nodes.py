@@ -118,6 +118,14 @@ def resolve_variables(text: str, state: AgentState) -> str:
                         current_data = current_data.get(key, "")
                         if current_data == "": # Key not found or empty
                              break
+                    elif isinstance(current_data, list) and key.isdigit():
+                        # Handle array index access like fileUrls.0
+                        idx = int(key)
+                        if 0 <= idx < len(current_data):
+                            current_data = current_data[idx]
+                        else:
+                            current_data = ""
+                            break
                     else:
                         current_data = ""
                         break
@@ -373,25 +381,197 @@ async def knowledge_node(state: AgentState, config: Dict[str, Any], node_id: str
 async def start_node(state: AgentState, config: Dict[str, Any], node_id: str):
     print(f"Executing Start Node {node_id}")
     # Start node output is usually the initial user inputs
-    
+
     # Let's grab from context
     initial_inputs = state.get("context", {})
-    
+
+    # Extract file information from inputs
+    # fileUrls and fileNames may be passed from the frontend after upload
+    file_urls = initial_inputs.get("fileUrls", [])
+    file_names = initial_inputs.get("fileNames", [])
+
+    # For backward compatibility, also check for single file_name
+    if not file_names and initial_inputs.get("file_name"):
+        file_names = [initial_inputs.get("file_name")]
+    if not file_urls and initial_inputs.get("file_url"):
+        file_urls = [initial_inputs.get("file_url")]
+
     # Format output according to requested schema
     output = {
         "rawQuery": initial_inputs.get("input", ""),
-        "fileNames": [initial_inputs.get("file_name")] if initial_inputs.get("file_name") else [],
-        "fileUrls": [], # To be implemented if upload logic exists
+        "fileNames": file_names,
+        "fileUrls": file_urls,
         "request_id": initial_inputs.get("request_id", ""),
         "conversion_id": initial_inputs.get("conversion_id", "")
     }
-    
+
     return update_node_output(state, node_id, output)
 
 async def end_node(state: AgentState, config: Dict[str, Any], node_id: str):
     print(f"Executing End Node {node_id}")
     # End node might aggregate outputs?
     return {"current_node": node_id}
+
+async def excel_parser_node(state: AgentState, config: Dict[str, Any], node_id: str):
+    """Parse Excel file and return as a list of records."""
+    print(f"Executing Excel Parser Node {node_id}: {config}")
+
+    # Get file URL from config (resolve variables if needed)
+    file_url_template = config.get('file_url', '')
+    file_url = resolve_variables(file_url_template, state)
+
+    # Get sheet name (default to 0 for first sheet)
+    sheet_name = config.get('sheet_name', 0)
+    skip_empty_rows = config.get('skip_empty_rows', True)
+
+    print(f"Excel Parser - file_url: {file_url}, sheet_name: {sheet_name}, skip_empty_rows: {skip_empty_rows}")
+
+    # Input for tracing
+    inputs = {
+        "file_url": file_url,
+        "sheet_name": sheet_name,
+        "skip_empty_rows": skip_empty_rows
+    }
+
+    # Import pandas for Excel parsing
+    try:
+        import pandas as pd
+        import os
+        import tempfile
+        from urllib.parse import urlparse
+        from app.services.minio_service import minio_service
+
+        file_path = file_url
+
+        # Check if it's a MinIO HTTP URL
+        if file_url and file_url.startswith('http://'):
+            # Parse URL to extract bucket and object name
+            # URL format: http://endpoint/bucket/object_name
+            parsed = urlparse(file_url)
+            path_parts = parsed.path.lstrip('/').split('/', 1)
+
+            if len(path_parts) >= 2:
+                bucket = path_parts[0]
+                object_name = path_parts[1]
+
+                # Download from MinIO to temp file
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+                temp_path = temp_file.name
+                temp_file.close()
+
+                try:
+                    minio_service.download_file(object_name, temp_path)
+                    file_path = temp_path
+                    print(f"Downloaded file from MinIO to: {temp_path}")
+                except Exception as e:
+                    error_msg = f"Failed to download from MinIO: {str(e)}"
+                    print(f"Excel Parser Error: {error_msg}")
+                    output = {
+                        "records": [],
+                        "headers": [],
+                        "row_count": 0,
+                        "error": error_msg
+                    }
+                    return update_node_output(state, node_id, output, inputs=inputs)
+
+        if not file_path or not os.path.exists(file_path):
+            error_msg = f"File not found or not accessible: {file_path}"
+            print(f"Excel Parser Error: {error_msg}")
+            output = {
+                "records": [],
+                "headers": [],
+                "row_count": 0,
+                "error": error_msg
+            }
+            return update_node_output(state, node_id, output, inputs=inputs)
+
+        # Read Excel file
+        # sheet_name can be an integer (index) or string (name)
+        df = pd.read_excel(file_path, sheet_name=sheet_name)
+
+        # Get headers (column names)
+        headers = df.columns.tolist()
+
+        # Convert to list of records (dictionaries)
+        records = df.to_dict(orient='records')
+
+        # Optionally skip empty rows (rows where all values are NaN/None)
+        if skip_empty_rows:
+            records = [
+                record for record in records
+                if any(v is not None and v == v for v in record.values())  # v == v filters out NaN
+            ]
+
+        # Convert NaN values to None for JSON serialization
+        for record in records:
+            for key, value in record.items():
+                if pd.isna(value):
+                    record[key] = None
+
+        output = {
+            "records": records,
+            "headers": headers,
+            "row_count": len(records)
+        }
+
+        print(f"Excel Parser Success: {len(records)} rows parsed, headers: {headers}")
+
+        # Clean up temp file if it was created
+        if file_url.startswith('http://') and os.path.exists(file_path):
+            try:
+                os.unlink(file_path)
+            except:
+                pass
+
+    except ImportError:
+        error_msg = "pandas library not installed. Please install it with: pip install pandas openpyxl"
+        print(f"Excel Parser Error: {error_msg}")
+        output = {
+            "records": [],
+            "headers": [],
+            "row_count": 0,
+            "error": error_msg
+        }
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        error_msg = f"Failed to parse Excel file: {str(e)}"
+        print(f"Excel Parser Error: {error_msg}")
+        print(f"Traceback: {error_trace}")
+        output = {
+            "records": [],
+            "headers": [],
+            "row_count": 0,
+            "error": error_msg,
+            "traceback": error_trace
+        }
+
+    return update_node_output(state, node_id, output, inputs=inputs)
+
+async def output_node(state: AgentState, config: Dict[str, Any], node_id: str):
+    """Output node that collects and concatenates upstream variables."""
+    print(f"Executing Output Node {node_id}: {config}")
+
+    # Get output template from config
+    output_template = config.get('output_template', '')
+
+    # Resolve variables in the template
+    output_text = resolve_variables(output_template, state)
+
+    # Input for tracing
+    inputs = {
+        "output_template": output_template,
+        "resolved_output": output_text
+    }
+
+    output = {
+        "output_text": output_text
+    }
+
+    print(f"Output Node - template: {output_template}")
+    print(f"Output Node - result: {output_text[:200] if len(output_text) > 200 else output_text}")
+
+    return update_node_output(state, node_id, output, inputs=inputs)
 
 # Registry mapping node types to functions
 NODE_REGISTRY = {
@@ -400,5 +580,7 @@ NODE_REGISTRY = {
     "knowledge": knowledge_node,
     "start": start_node,
     "end": end_node,
+    "excel_parser": excel_parser_node,
+    "output": output_node,
     "common": llm_node # Fallback
 }

@@ -133,7 +133,7 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({ node, nodes = [], 
         upNode.data.output_params.forEach((param: any) => {
           variables.push({
             label: `${upNode.data.label || upNode.id}.${param.name}`,
-            value: `${upNode.id}.output.${param.name}`,
+            value: `${upNode.id}.${param.name}`,
             type: param.type
           });
         });
@@ -205,8 +205,8 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({ node, nodes = [], 
           return <div style={{ color: '#999', fontSize: '12px' }}>该节点无输出参数</div>;
       }
       
-      // For start node and system nodes (llm, knowledge, tool, doc_parser), render read-only output params
-      const systemNodes = ['start', 'llm', 'knowledge', 'tool', 'doc_parser'];
+      // For start node and system nodes (llm, knowledge, tool, doc_parser, excel_parser, output), render read-only output params
+      const systemNodes = ['start', 'llm', 'knowledge', 'tool', 'doc_parser', 'excel_parser', 'output'];
       if (systemNodes.includes(nodeType)) {
           return (
             <Form.List name="output_params">
@@ -285,17 +285,38 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({ node, nodes = [], 
   const renderSystemParams = () => {
     switch (nodeType) {
       case 'start':
-      case 'end':
           return (
             <>
-                <Form.Item 
-                    name="reply_template" 
+                <Form.Item
+                    label="节点标识名"
+                    tooltip="系统内部使用的节点标识，不可修改"
+                >
+                    <Input value="start_node" disabled style={{ backgroundColor: '#f5f5f5', cursor: 'not-allowed' }} />
+                </Form.Item>
+                <Form.Item
+                    name="reply_template"
                     label="回复模板"
                     tooltip="使用 {{variable_name}} 引用输入参数"
                 >
-                    <Input.TextArea 
-                        rows={4} 
-                        placeholder="例如: 今天 {{output_location}} 的温度为 {{output_temperature}}" 
+                    <Input.TextArea
+                        rows={4}
+                        placeholder="例如: 今天 {{output_location}} 的温度为 {{output_temperature}}"
+                        style={{ backgroundColor: '#fafafa' }}
+                    />
+                </Form.Item>
+            </>
+          );
+      case 'end':
+          return (
+            <>
+                <Form.Item
+                    name="reply_template"
+                    label="回复模板"
+                    tooltip="使用 {{variable_name}} 引用输入参数"
+                >
+                    <Input.TextArea
+                        rows={4}
+                        placeholder="例如: 今天 {{output_location}} 的温度为 {{output_temperature}}"
                         style={{ backgroundColor: '#fafafa' }}
                     />
                 </Form.Item>
@@ -356,6 +377,64 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({ node, nodes = [], 
                      ))}
                  </Select>
              </Form.Item>
+          );
+      case 'excel_parser':
+          return (
+              <>
+                  <Form.Item
+                      name="file_url"
+                      label="Excel文件路径"
+                      tooltip="从上游节点引用文件路径，例如: {{start_node.fileUrls.0}}"
+                      extra={
+                          upstreamVariables.length > 0 && (
+                              <div style={{ marginTop: 4 }}>
+                                  <Text type="secondary" style={{ fontSize: '11px' }}>快速选择: </Text>
+                                  {upstreamVariables
+                                      .filter(v => v.label.includes('fileUrls') || v.label.includes('file'))
+                                      .map(v => (
+                                          <Typography.Link
+                                              key={v.value}
+                                              onClick={() => form.setFieldValue('file_url', v.value)}
+                                              style={{ fontSize: '11px', marginLeft: 4 }}
+                                          >
+                                              {v.label}
+                                          </Typography.Link>
+                                      ))}
+                              </div>
+                          )
+                      }
+                  >
+                      <Input placeholder="例如: {{start_node.fileUrls.0}}" />
+                  </Form.Item>
+                  <Form.Item name="sheet_name" label="工作表名称/索引" initialValue={0} tooltip="默认为0（第一个工作表），可指定工作表名称">
+                      <Input placeholder="工作表名称或索引（默认0）" />
+                  </Form.Item>
+                  <Form.Item name="skip_empty_rows" label="跳过空行" valuePropName="checked" initialValue={true}>
+                      <Select placeholder="是否跳过空行">
+                          <Option value={true}>是</Option>
+                          <Option value={false}>否</Option>
+                      </Select>
+                  </Form.Item>
+              </>
+          );
+      case 'output':
+          return (
+              <>
+                  <Form.Item
+                      name="output_template"
+                      label="输出模板"
+                      tooltip="使用 &lbrace;&lbrace;变量名&rbrace;&rbrace; 引用上游节点的输出，如 &lbrace;&lbrace;node_name.field_name&rbrace;&rbrace;"
+                  >
+                      <Input.TextArea
+                          rows={6}
+                          placeholder="例如: 姓名: &lbrace;&lbrace;start_node.rawQuery&rbrace;&rbrace; 分析结果: &lbrace;&lbrace;llm_node.text&rbrace;&rbrace; 数据行数: &lbrace;&lbrace;excel_parser_node.row_count&rbrace;&rbrace;"
+                          style={{ fontFamily: 'monospace' }}
+                      />
+                  </Form.Item>
+                  <div style={{ color: '#999', fontSize: '12px', marginTop: '-8px', marginBottom: '16px' }}>
+                      使用 &lbrace;&lbrace;变量名&rbrace;&rbrace; 引用上游变量，多个变量可自由拼接
+                  </div>
+              </>
           );
       default:
         return (

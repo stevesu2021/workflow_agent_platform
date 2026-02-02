@@ -1,12 +1,14 @@
 import React from 'react';
-import { 
-  RobotOutlined, 
-  ReadOutlined, 
-  ToolOutlined, 
-  ApiOutlined, 
-  FileTextOutlined, 
-  EyeOutlined, 
-  CompassOutlined 
+import {
+  RobotOutlined,
+  ReadOutlined,
+  ToolOutlined,
+  ApiOutlined,
+  FileTextOutlined,
+  EyeOutlined,
+  CompassOutlined,
+  FileExcelOutlined,
+  SendOutlined
 } from '@ant-design/icons';
 import { Typography, Card, Space } from 'antd';
 
@@ -25,8 +27,10 @@ export const Sidebar = () => {
     { type: 'tool', label: '工具调用', icon: <ToolOutlined />, color: '#fa8c16', bg: '#fff7e6' },
     { type: 'mcp', label: 'MCP服务', icon: <ApiOutlined />, color: '#722ed1', bg: '#f9f0ff' },
     { type: 'doc_parser', label: '文档解析', icon: <FileTextOutlined />, color: '#13c2c2', bg: '#e6fffb' },
+    { type: 'excel_parser', label: 'Excel解析', icon: <FileExcelOutlined />, color: '#52c41a', bg: '#f6ffed' },
     { type: 'vision', label: '视觉理解', icon: <EyeOutlined />, color: '#eb2f96', bg: '#fff0f6' },
     { type: 'intent', label: '意图识别', icon: <CompassOutlined />, color: '#faad14', bg: '#fffbe6' },
+    { type: 'output', label: '输出', icon: <SendOutlined />, color: '#8c8c8c', bg: '#f5f5f5' },
   ];
 
   return (

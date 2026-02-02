@@ -1,4 +1,6 @@
 import React, { useCallback, useRef, useState, useMemo, useEffect } from 'react';
+import { Tabs, Button, Modal, Form, Input, message, Dropdown } from 'antd';
+import { SaveOutlined, ExportOutlined, DownOutlined } from '@ant-design/icons';
 import ReactFlow, {
   MiniMap,
   Controls,
@@ -11,8 +13,6 @@ import ReactFlow, {
 import type { Connection, Edge, Node, ReactFlowInstance } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Tabs, Button, Modal, Form, Input, message } from 'antd';
-import { SaveOutlined, ExportOutlined } from '@ant-design/icons';
 import { Sidebar } from './workflow/Sidebar';
 import { DebugPanel } from './workflow/DebugPanel';
 import { PropertyPanel } from './workflow/PropertyPanel';
@@ -54,8 +54,12 @@ const WorkflowStudioContent: React.FC = () => {
   
   // Save modal state
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  const [isSaveAsMode, setIsSaveAsMode] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveForm] = Form.useForm();
+
+  // Store current agent data for save as
+  const [currentAgentData, setCurrentAgentData] = useState<{ name: string; description: string } | null>(null);
 
   // Load agent data if editing
   useEffect(() => {
@@ -81,6 +85,19 @@ const WorkflowStudioContent: React.FC = () => {
         }).finally(() => {
             setSaveLoading(false);
         });
+
+        // Fetch agent details to get name for save as
+        agentsApi.getAll().then(agents => {
+            const currentAgent = agents.find(a => a.id === workflowId);
+            if (currentAgent) {
+                setCurrentAgentData({
+                    name: currentAgent.name,
+                    description: currentAgent.description || ''
+                });
+            }
+        }).catch(err => {
+            console.error("Failed to fetch agent details:", err);
+        });
     }
   }, [workflowId, setNodes, setEdges]);
   
@@ -92,18 +109,18 @@ const WorkflowStudioContent: React.FC = () => {
         const flowObject = reactFlowInstance.toObject();
         // react-flow's toObject() returns { nodes, edges, viewport }
         // Our backend expects { nodes, edges } for flow_json
-        
+
         // Ensure flow_json matches AgentGraph schema (nodes, edges)
         // Clean node data to match NodeData schema
         const flowJson = {
             nodes: flowObject.nodes.map(node => {
                 // Ensure data fields match NodeData schema
                 const { originalType, output_params, ...restData } = node.data || {};
-                
+
                 // Map frontend fields to backend NodeData schema
                 // Frontend uses 'originalType' sometimes, but backend expects type in Node.type (which is already mapped)
                 // Backend NodeData allows extra fields (Config.extra = "allow"), but we should be careful.
-                
+
                 // Determine the correct backend type
                 // Frontend uses 'common' for drag-and-drop nodes, but backend requires specific types like 'llm', 'tool', etc.
                 // We stored the specific type in 'originalType' or 'type' (if not common)
@@ -111,7 +128,7 @@ const WorkflowStudioContent: React.FC = () => {
                 if (node.type === 'common' && node.data?.originalType) {
                     backendType = node.data.originalType;
                 }
-                
+
                 return {
                     id: node.id,
                     type: backendType, // 'start', 'end', 'llm', 'tool', etc.
@@ -124,7 +141,7 @@ const WorkflowStudioContent: React.FC = () => {
                         temperature: node.data.temperature ? Number(node.data.temperature) : 0.7,
                         tool_id: node.data.tool_name, // Frontend uses tool_name?
                         knowledge_id: node.data.knowledge_base_id,
-                        // Keep original data for frontend restoration if needed, 
+                        // Keep original data for frontend restoration if needed,
                         // but be aware that backend validation might fail if type mismatches.
                         ...restData,
                         // Explicitly include output_params as it's used in frontend
@@ -140,29 +157,87 @@ const WorkflowStudioContent: React.FC = () => {
                 ...(edge.data ? { data: edge.data } : {})
             }))
         };
-        
-        if (workflowId) {
-             // Update existing
-             await agentsApi.update(workflowId, {
-                 name: values.name,
-                 description: values.description,
-                 // Also update the flow
-                 flow_json: flowJson
-             });
-             message.success('Agent updated successfully');
-             navigate('/agents');
-        } else {
-            // Create new
+
+        if (isSaveAsMode || !workflowId) {
+            // Create new agent (Save As or first time save)
             const newAgent = await agentsApi.create({
                 name: values.name,
                 description: values.description,
                 flow_json: flowJson
             });
-            message.success('Agent created successfully');
+            message.success(isSaveAsMode ? 'Agent saved as new successfully' : 'Agent created successfully');
+            setIsSaveAsMode(false);
             navigate('/agents');
+        } else {
+            // Update existing agent directly (no modal for regular save)
+            await agentsApi.update(workflowId, {
+                name: currentAgentData?.name || values.name,
+                description: currentAgentData?.description || values.description,
+                flow_json: flowJson
+            });
+            message.success('Agent saved successfully');
         }
-        
+
         setIsSaveModalOpen(false);
+    } catch (error) {
+        console.error(error);
+        message.error('Failed to save agent');
+    } finally {
+        setSaveLoading(false);
+    }
+  };
+
+  // Direct save (for editing existing agent, no modal)
+  const handleDirectSave = async () => {
+    if (!workflowId) {
+        // New agent, open modal
+        openSaveModal();
+        return;
+    }
+
+    if (!reactFlowInstance) return;
+
+    setSaveLoading(true);
+    try {
+        const flowObject = reactFlowInstance.toObject();
+        const flowJson = {
+            nodes: flowObject.nodes.map(node => {
+                const { originalType, output_params, ...restData } = node.data || {};
+                let backendType = node.type;
+                if (node.type === 'common' && node.data?.originalType) {
+                    backendType = node.data.originalType;
+                }
+                return {
+                    id: node.id,
+                    type: backendType,
+                    position: node.position,
+                    data: {
+                        label: node.data.label,
+                        model: node.data.model,
+                        prompt: node.data.system_prompt,
+                        temperature: node.data.temperature ? Number(node.data.temperature) : 0.7,
+                        tool_id: node.data.tool_name,
+                        knowledge_id: node.data.knowledge_base_id,
+                        ...restData,
+                        output_params: output_params
+                    }
+                };
+            }),
+            edges: flowObject.edges.map(edge => ({
+                id: edge.id,
+                source: edge.source,
+                target: edge.target,
+                label: edge.label,
+                ...(edge.data ? { data: edge.data } : {})
+            }))
+        };
+
+        await agentsApi.update(workflowId, {
+            name: currentAgentData?.name || 'Untitled',
+            description: currentAgentData?.description || '',
+            flow_json: flowJson
+        });
+        message.success('Agent saved successfully');
     } catch (error) {
         console.error(error);
         message.error('Failed to save agent');
@@ -173,9 +248,19 @@ const WorkflowStudioContent: React.FC = () => {
 
   const openSaveModal = () => {
       saveForm.setFieldsValue({
-          name: '', // You might want to pre-fill if editing
+          name: '',
           description: ''
       });
+      setIsSaveAsMode(false);
+      setIsSaveModalOpen(true);
+  };
+
+  const openSaveAsModal = () => {
+      saveForm.setFieldsValue({
+          name: currentAgentData?.name + ' (Copy)' || '',
+          description: currentAgentData?.description || ''
+      });
+      setIsSaveAsMode(true);
       setIsSaveModalOpen(true);
   };
 
@@ -259,6 +344,18 @@ const WorkflowStudioContent: React.FC = () => {
           case 'doc_parser':
               defaultOutputParams = [
                   { name: 'content', type: 'string', desc: '解析后的文本内容' }
+              ];
+              break;
+          case 'excel_parser':
+              defaultOutputParams = [
+                  { name: 'records', type: 'object[]', desc: '解析后的数据行列表' },
+                  { name: 'headers', type: 'string[]', desc: 'Excel表头列表' },
+                  { name: 'row_count', type: 'number', desc: '数据行数' }
+              ];
+              break;
+          case 'output':
+              defaultOutputParams = [
+                  { name: 'output_text', type: 'string', desc: '拼接后的输出文本' }
               ];
               break;
           default:
@@ -356,9 +453,30 @@ const WorkflowStudioContent: React.FC = () => {
                     导出 YAML
                 </Button>
             )}
-            <Button type="primary" icon={<SaveOutlined />} onClick={openSaveModal}>
+            <Button
+                type="primary"
+                icon={<SaveOutlined />}
+                onClick={handleDirectSave}
+                loading={saveLoading}
+                style={{ marginRight: 8 }}
+            >
                 保存
             </Button>
+            <Dropdown.Button
+                icon={<DownOutlined />}
+                onClick={handleDirectSave}
+                menu={{
+                    items: [
+                        {
+                            key: 'save-as',
+                            label: '另存为...',
+                            onClick: openSaveAsModal
+                        }
+                    ]
+                }}
+            >
+                更多
+            </Dropdown.Button>
           </div>
       </div>
       

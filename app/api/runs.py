@@ -1,19 +1,78 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_session
 from app.services.agent_service import AgentService
 from app.services.workflow_engine import WorkflowBuilder
 from app.schemas.agent_schema import AgentGraph
+from app.services.minio_service import minio_service
 from langchain_core.messages import HumanMessage
 import uuid
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 from pydantic import BaseModel
 
 class AgentRunRequest(BaseModel):
     inputs: Dict[str, Any]
 
+class FileUploadResponse(BaseModel):
+    file_urls: List[str]
+    file_names: List[str]
+
 router = APIRouter()
+
+
+@router.post("/upload-file")
+async def upload_file(
+    files: List[UploadFile] = File(...),
+):
+    """
+    Upload files to MinIO and return their URLs.
+
+    Returns:
+        File URLs and names that can be passed to the agent run endpoint
+    """
+    import os
+    from datetime import datetime
+
+    file_urls = []
+    file_names = []
+
+    for file in files:
+        # Generate unique object name with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_filename = file.filename.replace(" ", "_").replace("/", "_")
+        object_name = f"uploads/{timestamp}_{uuid.uuid4().hex[:8]}_{safe_filename}"
+
+        # Read file content
+        content = await file.read()
+        file_size = len(content)
+
+        # Upload to MinIO
+        try:
+            import io
+            stream = io.BytesIO(content)
+            minio_service.upload_stream(
+                stream,
+                object_name,
+                file_size,
+                content_type=file.content_type or "application/octet-stream"
+            )
+
+            # Generate presigned URL for access
+            # Use MinIO endpoint format
+            from app.core.config import settings
+            file_url = f"http://{settings.MINIO_ENDPOINT}/{settings.MINIO_BUCKET}/{object_name}"
+
+            file_urls.append(file_url)
+            file_names.append(file.filename)
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to upload file {file.filename}: {str(e)}"
+            )
+
+    return FileUploadResponse(file_urls=file_urls, file_names=file_names)
 
 @router.post("/{agent_id}/run")
 async def run_agent(

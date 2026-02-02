@@ -5,3 +5,5 @@ volumes/etcd/member/
 .env
 */.env
 OpenManus/workspace/*
+tmp.*
+*.tmp
