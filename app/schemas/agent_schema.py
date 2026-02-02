@@ -25,7 +25,7 @@ class NodeData(BaseModel):
 
 class Node(BaseModel):
     id: str
-    type: Literal['start', 'end', 'llm', 'tool', 'agent', 'condition', 'knowledge', 'input', 'output', 'doc_parser', 'excel_parser', 'mcp', 'vision', 'intent']
+    type: Literal['start', 'end', 'llm', 'tool', 'agent', 'condition', 'knowledge', 'input', 'output', 'doc_parser', 'excel_parser', 'mcp', 'vision', 'intent', 'for_loop', 'code_block']
     position: Optional[Position] = None
     data: NodeData = Field(default_factory=NodeData)
 

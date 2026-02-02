@@ -8,7 +8,9 @@ import {
   EyeOutlined,
   CompassOutlined,
   FileExcelOutlined,
-  SendOutlined
+  SendOutlined,
+  RedoOutlined,
+  CodeOutlined
 } from '@ant-design/icons';
 import { Typography, Card, Space } from 'antd';
 
@@ -30,7 +32,9 @@ export const Sidebar = () => {
     { type: 'excel_parser', label: 'Excel解析', icon: <FileExcelOutlined />, color: '#52c41a', bg: '#f6ffed' },
     { type: 'vision', label: '视觉理解', icon: <EyeOutlined />, color: '#eb2f96', bg: '#fff0f6' },
     { type: 'intent', label: '意图识别', icon: <CompassOutlined />, color: '#faad14', bg: '#fffbe6' },
+    { type: 'code_block', label: '代码块', icon: <CodeOutlined />, color: '#fa541c', bg: '#fff2e8' },
     { type: 'output', label: '输出', icon: <SendOutlined />, color: '#8c8c8c', bg: '#f5f5f5' },
+    { type: 'for_loop', label: 'For循环', icon: <RedoOutlined />, color: '#722ed1', bg: '#f9f0ff' },
   ];
 
   return (

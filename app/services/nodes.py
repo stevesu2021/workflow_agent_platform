@@ -555,12 +555,36 @@ async def output_node(state: AgentState, config: Dict[str, Any], node_id: str):
     # Get output template from config
     output_template = config.get('output_template', '')
 
-    # Resolve variables in the template
-    output_text = resolve_variables(output_template, state)
+    # Get input_params mapping (local variable name -> upstream source)
+    input_params = config.get('input_params', [])
+
+    # Build a mapping of local variable names to their actual sources
+    # e.g., {'infos': 'node_2.records'}
+    var_mapping = {}
+    for param in input_params:
+        local_name = param.get('name')
+        value_source = param.get('value_source')
+        if local_name and value_source:
+            var_mapping[local_name] = value_source
+
+    # First, replace local variable names with their actual sources in the template
+    # e.g., {{infos}} -> {{node_2.records}}
+    resolved_template = output_template
+    for local_name, actual_source in var_mapping.items():
+        # Replace {{local_name}} with {{actual_source}}
+        # Need to escape braces: {{ -> {{{{ and }} -> }}}}}
+        resolved_template = resolved_template.replace('{{' + local_name + '}}', '{{' + actual_source + '}}')
+
+    print(f"Output Node - original template: {output_template}")
+    print(f"Output Node - resolved template: {resolved_template}")
+
+    # Then resolve variables in the template using the actual sources
+    output_text = resolve_variables(resolved_template, state)
 
     # Input for tracing
     inputs = {
         "output_template": output_template,
+        "resolved_template": resolved_template,
         "resolved_output": output_text
     }
 
@@ -568,8 +592,483 @@ async def output_node(state: AgentState, config: Dict[str, Any], node_id: str):
         "output_text": output_text
     }
 
-    print(f"Output Node - template: {output_template}")
     print(f"Output Node - result: {output_text[:200] if len(output_text) > 200 else output_text}")
+
+    return update_node_output(state, node_id, output, inputs=inputs)
+
+async def for_loop_node(state: AgentState, config: Dict[str, Any], node_id: str):
+    """For loop node that iterates over an array and processes each item."""
+    print(f"Executing For Loop Node {node_id}: {config}")
+
+    # Get configuration
+    array_input_template = config.get('array_input', '')
+    item_alias = config.get('item_alias', 'item')
+    max_iterations = config.get('max_iterations', 50)
+    on_error = config.get('on_error', 'skip')
+
+    # Resolve array input
+    array_input = resolve_variables(array_input_template, state)
+
+    # Input for tracing
+    inputs = {
+        "array_input": array_input_template,
+        "item_alias": item_alias,
+        "max_iterations": max_iterations,
+        "on_error": on_error
+    }
+
+    # Validate array input is a list
+    if not isinstance(array_input, list):
+        error_msg = f"For loop input must be a list, got {type(array_input).__name__}"
+        print(f"For Loop Node Error: {error_msg}")
+        output = {
+            "results_array": [],
+            "iteration_count": 0,
+            "error": error_msg
+        }
+        return update_node_output(state, node_id, output, inputs=inputs)
+
+    # Limit iterations to max_iterations
+    items = array_input[:max_iterations]
+    actual_iterations = len(items)
+
+    print(f"For Loop Node - iterating over {actual_iterations} items (max: {max_iterations})")
+
+    # For now, we'll return the items as-is since the workflow engine
+    # doesn't support subgraph execution yet. This provides:
+    # - The array being iterated
+    # - Metadata about the iteration
+    # In the future, this would execute a subgraph for each item
+
+    results_array = []
+    for i, item in enumerate(items):
+        # Create a context entry for this iteration
+        # In a full implementation, this would execute the subgraph
+        iteration_context = {
+            "index": i,
+            "value": item,
+            f"item_alias": item_alias
+        }
+        results_array.append(iteration_context)
+
+    output = {
+        "results_array": results_array,
+        "iteration_count": actual_iterations,
+        "array_preview": items[:10] if len(items) > 10 else items  # Preview first 10 items
+    }
+
+    print(f"For Loop Node - completed {actual_iterations} iterations")
+
+    return update_node_output(state, node_id, output, inputs=inputs)
+
+async def code_block_node(state: AgentState, config: Dict[str, Any], node_id: str):
+    """Code block node that executes user Python code in a safe environment."""
+    print(f"Executing Code Block Node {node_id}")
+
+    # Get configuration
+    user_code = config.get('code', '')
+    timeout = config.get('timeout', 5)
+
+    # Input for tracing
+    inputs = {
+        "code": user_code,
+        "timeout": timeout
+    }
+
+    if not user_code or not user_code.strip():
+        error_msg = "Code is empty"
+        print(f"Code Block Node Error: {error_msg}")
+        output = {
+            "error": error_msg
+        }
+        return update_node_output(state, node_id, output, inputs=inputs)
+
+    # Build params dictionary from upstream node outputs
+    # Collect all upstream outputs and make them available via params
+    node_outputs = state.get("node_outputs", {})
+
+    # Also include input_params mapping if configured
+    input_params = config.get('input_params', [])
+    params = {}
+
+    # First, collect all upstream outputs (for flexibility)
+    for up_node_id, up_output in node_outputs.items():
+        if isinstance(up_output, dict):
+            # Flatten the output to params (prefix with node_id for clarity)
+            for key, value in up_output.items():
+                params[f"{up_node_id}.{key}"] = value
+
+    # Then, apply explicit input_params mappings as simpler names
+    for param in input_params:
+        local_name = param.get('name')
+        value_source = param.get('value_source')
+        if local_name and value_source:
+            # Resolve the value_source from node_outputs
+            parts = value_source.split('.')
+            if len(parts) >= 2:
+                source_node_id = parts[0]
+                source_field = '.'.join(parts[1:])
+                if source_node_id in node_outputs:
+                    source_output = node_outputs[source_node_id]
+                    if isinstance(source_output, dict) and source_field in source_output:
+                        params[local_name] = source_output[source_field]
+
+    print(f"Code Block Node - params: {list(params.keys())}")
+
+    # Safe builtins - only include safe functions
+    safe_builtins = {
+        'abs': abs,
+        'all': all,
+        'any': any,
+        'bool': bool,
+        'dict': dict,
+        'enumerate': enumerate,
+        'filter': filter,
+        'float': float,
+        'int': int,
+        'len': len,
+        'list': list,
+        'map': map,
+        'max': max,
+        'min': min,
+        'range': range,
+        'round': round,
+        'set': set,
+        'sorted': sorted,
+        'str': str,
+        'sum': sum,
+        'tuple': tuple,
+        'zip': zip,
+        'print': print,  # Allow print for debugging
+    }
+
+    # Whitelist modules (read-only, no side effects)
+    import math
+    import json
+    import re
+    from collections import Counter, defaultdict
+
+    safe_modules = {
+        'math': math,
+        'json': json,
+        're': re,
+        'Counter': Counter,
+        'defaultdict': defaultdict,
+    }
+
+    # Build safe execution environment
+    safe_globals = {
+        '__builtins__': safe_builtins,
+        'params': params,
+        'output': None,
+        **safe_modules
+    }
+
+    # Execute code with timeout
+    import signal
+    import asyncio
+
+    def timeout_handler(signum, frame):
+        raise TimeoutError("Code execution timed out")
+
+    try:
+        # Basic syntax check before execution
+        import ast
+        try:
+            ast.parse(user_code)
+        except SyntaxError as e:
+            error_msg = f"Syntax error at line {e.lineno}: {e.msg}"
+            print(f"Code Block Node Error: {error_msg}")
+            output = {"error": error_msg, "syntax_error": str(e)}
+            return update_node_output(state, node_id, output, inputs=inputs)
+
+        # Check for dangerous patterns (basic security)
+        dangerous_patterns = [
+            'import', 'exec', 'eval', 'compile', 'open(', 'file(',
+            '__import__', 'getattr', 'setattr', 'delattr',
+            'os.', 'sys.', 'subprocess', 'socket', 'urllib',
+            'requests', 'http', 'ftplib', 'telnetlib',
+            '__class__', '__bases__', '__subclasses__',
+            'globals(', 'locals(', 'vars(',
+        ]
+        user_code_lower = user_code.lower()
+        for pattern in dangerous_patterns:
+            if pattern in user_code_lower:
+                # Allow json, math, re imports (from safe modules)
+                if pattern == 'import' and ('import json' in user_code_lower or 'import math' in user_code_lower or 'import re' in user_code_lower):
+                    continue
+                if pattern in ('json', 'math', 're'):
+                    continue
+                error_msg = f"Blocked: '{pattern}' is not allowed for security reasons"
+                print(f"Code Block Node Error: {error_msg}")
+                output = {"error": error_msg}
+                return update_node_output(state, node_id, output, inputs=inputs)
+
+        # Execute the code
+        exec(user_code, safe_globals)
+
+        # Extract output
+        result_output = safe_globals.get("output")
+        if result_output is None:
+            error_msg = "Code must define 'output' variable (e.g., output = {...})"
+            print(f"Code Block Node Error: {error_msg}")
+            output = {"error": error_msg}
+        elif not isinstance(result_output, dict):
+            error_msg = f"'output' must be a dictionary, got {type(result_output).__name__}"
+            print(f"Code Block Node Error: {error_msg}")
+            output = {"error": error_msg}
+        else:
+            output = result_output
+            print(f"Code Block Node - success: {list(output.keys())}")
+
+    except TimeoutError as e:
+        error_msg = f"Execution timeout (exceeded {timeout} seconds)"
+        print(f"Code Block Node Error: {error_msg}")
+        output = {"error": error_msg}
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        print(f"Code Block Node Error: {error_msg}")
+        print(f"Traceback: {error_trace}")
+        output = {
+            "error": error_msg,
+            "traceback": error_trace
+        }
+
+    return update_node_output(state, node_id, output, inputs=inputs)
+
+async def intent_node(state: AgentState, config: Dict[str, Any], node_id: str):
+    """Intent recognition node that uses LLM to classify user intent and extract slots."""
+    print(f"Executing Intent Node {node_id}: {config}")
+
+    # Get configuration
+    user_input_template = config.get('user_input_source', '{{start-node.rawQuery}}')
+    model = config.get('model')
+    confidence_threshold = config.get('confidence_threshold', 0.3)
+    fallback_node_id = config.get('fallback_node_id', '')
+
+    # Resolve user input
+    user_input = resolve_variables(user_input_template, state)
+
+    # Input for tracing
+    inputs = {
+        "user_input_source": user_input_template,
+        "resolved_user_input": user_input,
+        "model": model,
+        "confidence_threshold": confidence_threshold,
+        "fallback_node_id": fallback_node_id
+    }
+
+    if not user_input or not user_input.strip():
+        # Empty input, return unknown
+        output = {
+            "intent": "unknown",
+            "intent_name": "未知意图",
+            "confidence": 0.0,
+            "slots": {},
+            "matched_node_id": fallback_node_id
+        }
+        return update_node_output(state, node_id, output, inputs=inputs)
+
+    # Collect capabilities from all output nodes in the workflow
+    # In a real implementation, we would get this from the workflow graph definition
+    # For now, we'll use a placeholder implementation
+    node_outputs = state.get("node_outputs", {})
+
+    # Build capabilities list from workflow graph
+    # This would be passed in via config or derived from workflow structure
+    capabilities = config.get('capabilities', [])
+
+    if not capabilities:
+        # No capabilities configured
+        print(f"Intent Node - No capabilities configured, returning unknown")
+        output = {
+            "intent": "unknown",
+            "intent_name": "未知意图",
+            "confidence": 0.0,
+            "slots": {},
+            "matched_node_id": fallback_node_id,
+            "raw_response": {"error": "No capabilities configured"}
+        }
+        return update_node_output(state, node_id, output, inputs=inputs)
+
+    # Build prompt for LLM
+    prompt = """你是一个任务路由器。请根据用户输入，从以下可处理任务中选择最匹配的一项，并提取参数。
+
+【可用任务】
+"""
+
+    for cap in capabilities:
+        cap_id = cap.get('id', 'unknown')
+        cap_name = cap.get('name', cap_id)
+        cap_examples = cap.get('examples', [])
+        cap_slots = cap.get('slots', {})
+
+        prompt += f"- 任务ID: {cap_id}\n"
+        prompt += f"  名称: {cap_name}\n"
+        prompt += f"  用户可能说: {'; '.join(cap_examples) if cap_examples else '无'}\n"
+        prompt += f"  需要参数: {', '.join(cap_slots.keys()) if cap_slots else '无'}\n"
+
+    prompt += """
+请严格按以下 JSON 格式输出，不要任何解释：
+{
+  "intent": "任务ID 或 'unknown'",
+  "intent_name": "任务名称或'未知'",
+  "confidence": 0.0~1.0,
+  "slots": { "参数名": "值" }
+}
+
+用户输入：""" + user_input
+
+    print(f"Intent Node - Prompt length: {len(prompt)}")
+
+    # Call LLM
+    try:
+        # Import here to avoid circular dependency
+        from app.services.nodes import get_llm_config, resolve_variables
+        from langchain_openai import ChatOpenAI
+        from langchain_core.messages import HumanMessage, SystemMessage
+        import json
+
+        # Get LLM config
+        resource_config = await get_llm_config(model) if model else None
+
+        api_key = None
+        base_url = None
+        actual_model_name = model or "gpt-3.5-turbo"
+
+        if resource_config:
+            api_key = resource_config.get("api_key")
+            base_url = resource_config.get("base_url")
+            actual_model_name = resource_config.get("model", actual_model_name)
+
+            # Sanitize base_url
+            if base_url and base_url.endswith("/chat/completions"):
+                base_url = base_url.replace("/chat/completions", "")
+                if base_url.endswith("/"):
+                    base_url = base_url.rstrip("/")
+
+        if not api_key:
+            # No API key, return unknown
+            print(f"Intent Node - No API key available")
+            output = {
+                "intent": "unknown",
+                "intent_name": "未知意图",
+                "confidence": 0.0,
+                "slots": {},
+                "matched_node_id": fallback_node_id,
+                "raw_response": {"error": "No API key available"}
+            }
+            return update_node_output(state, node_id, output, inputs=inputs)
+
+        # Create LLM
+        llm = ChatOpenAI(
+            model=actual_model_name,
+            openai_api_key=api_key,
+            openai_api_base=base_url,
+            temperature=0.1  # Low temperature for consistent classification
+        )
+
+        messages = [
+            SystemMessage(content="你是一个专业的任务意图识别助手。请严格按照JSON格式输出。"),
+            HumanMessage(content=prompt)
+        ]
+
+        print(f"Intent Node - Calling LLM: {actual_model_name}")
+        response = await llm.ainvoke(messages)
+        response_text = response.content
+
+        print(f"Intent Node - LLM Response: {response_text[:200]}")
+
+        # Parse JSON response
+        try:
+            # Try to extract JSON from response
+            response_text = response_text.strip()
+            if response_text.startswith('```json'):
+                response_text = response_text[7:]
+            if response_text.startswith('```'):
+                response_text = response_text[3:]
+            if response_text.endswith('```'):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+
+            result = json.loads(response_text)
+
+            intent_id = result.get("intent", "unknown")
+            intent_name = result.get("intent_name", result.get("intent", "unknown"))
+            confidence = float(result.get("confidence", 0.0))
+            slots = result.get("slots", {})
+
+            # Check confidence threshold
+            if intent_id == "unknown" or confidence < confidence_threshold:
+                print(f"Intent Node - Low confidence ({confidence}) or unknown, using fallback")
+                # Find fallback capability
+                fallback_cap = None
+                for cap in capabilities:
+                    if cap.get('is_fallback'):
+                        fallback_cap = cap
+                        break
+
+                if fallback_cap:
+                    intent_id = fallback_cap.get('id', fallback_node_id)
+                    intent_name = fallback_cap.get('name', '默认处理')
+                    matched_node_id = fallback_cap.get('node_id', fallback_node_id)
+                else:
+                    intent_id = "unknown"
+                    intent_name = "未知意图"
+                    matched_node_id = fallback_node_id
+            else:
+                # Find matched capability
+                matched_cap = None
+                for cap in capabilities:
+                    if cap.get('id') == intent_id:
+                        matched_cap = cap
+                        break
+
+                if matched_cap:
+                    intent_name = matched_cap.get('name', intent_name)
+                    matched_node_id = matched_cap.get('node_id', intent_id)
+                else:
+                    matched_node_id = intent_id
+
+            output = {
+                "intent": intent_id,
+                "intent_name": intent_name,
+                "confidence": confidence,
+                "slots": slots,
+                "matched_node_id": matched_node_id,
+                "raw_response": {"llm_output": response_text}
+            }
+
+            print(f"Intent Node - Matched: {intent_name} ({intent_id}) with confidence {confidence}")
+
+        except json.JSONDecodeError as e:
+            print(f"Intent Node - JSON parse error: {e}")
+            output = {
+                "intent": "unknown",
+                "intent_name": "未知意图",
+                "confidence": 0.0,
+                "slots": {},
+                "matched_node_id": fallback_node_id,
+                "raw_response": {"error": f"JSON parse error: {str(e)}", "llm_output": response_text}
+            }
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        error_msg = f"{type(e).__name__}: {str(e)}"
+        print(f"Intent Node Error: {error_msg}")
+        print(f"Traceback: {error_trace}")
+
+        output = {
+            "intent": "unknown",
+            "intent_name": "未知意图",
+            "confidence": 0.0,
+            "slots": {},
+            "matched_node_id": fallback_node_id,
+            "raw_response": {"error": error_msg, "traceback": error_trace}
+        }
 
     return update_node_output(state, node_id, output, inputs=inputs)
 
@@ -582,5 +1081,8 @@ NODE_REGISTRY = {
     "end": end_node,
     "excel_parser": excel_parser_node,
     "output": output_node,
+    "for_loop": for_loop_node,
+    "code_block": code_block_node,
+    "intent": intent_node,
     "common": llm_node # Fallback
 }

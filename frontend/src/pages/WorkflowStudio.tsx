@@ -19,6 +19,9 @@ import { PropertyPanel } from './workflow/PropertyPanel';
 import { StartNode } from './workflow/nodes/StartNode';
 import { CommonNode } from './workflow/nodes/CommonNode';
 import { EndNode } from './workflow/nodes/EndNode';
+import { ForLoopNode } from './workflow/nodes/ForLoopNode';
+import { CodeBlockNode } from './workflow/nodes/CodeBlockNode';
+import { IntentNode } from './workflow/nodes/IntentNode';
 import { agentsApi } from '../api/agents';
 
 const initialNodes: Node[] = [
@@ -295,6 +298,9 @@ const WorkflowStudioContent: React.FC = () => {
     start: StartNode,
     common: CommonNode,
     end: EndNode,
+    for_loop: ForLoopNode,
+    code_block: CodeBlockNode,
+    intent: IntentNode,
   }), []);
 
   const onConnect = useCallback(
@@ -356,6 +362,27 @@ const WorkflowStudioContent: React.FC = () => {
           case 'output':
               defaultOutputParams = [
                   { name: 'output_text', type: 'string', desc: '拼接后的输出文本' }
+              ];
+              break;
+          case 'for_loop':
+              defaultOutputParams = [
+                  { name: 'results_array', type: 'object[]', desc: '每次迭代结果组成的数组' },
+                  { name: 'iteration_count', type: 'number', desc: '实际完成的迭代次数' }
+              ];
+              break;
+          case 'code_block':
+              // Code block has dynamic output params based on user code
+              defaultOutputParams = [
+                  { name: 'result', type: 'any', desc: '代码执行结果（用户自定义）' }
+              ];
+              break;
+          case 'intent':
+              defaultOutputParams = [
+                  { name: 'intent', type: 'string', desc: '匹配到的意图标识符' },
+                  { name: 'intent_name', type: 'string', desc: '意图可读名称' },
+                  { name: 'confidence', type: 'number', desc: '匹配置信度 (0.0-1.0)' },
+                  { name: 'slots', type: 'object', desc: '提取出的结构化参数' },
+                  { name: 'matched_node_id', type: 'string', desc: '匹配到的下游目标节点ID' }
               ];
               break;
           default:

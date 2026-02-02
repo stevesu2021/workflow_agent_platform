@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Form, Input, Select, Drawer, Typography, Divider, Collapse, Button } from 'antd';
+import { Form, Input, Select, Drawer, Typography, Divider, Collapse, Button, Tag, Checkbox } from 'antd';
 import type { Node, Edge } from 'reactflow';
 import { knowledgeApi } from '../../api/knowledge';
 import { aiResourcesApi } from '../../api/aiResources';
@@ -97,7 +97,23 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({ node, nodes = [], 
 
   const handleValuesChange = (changedValues: any, allValues: any) => {
     if (node) {
-      onUpdate(node.id, allValues);
+      // For intent node, automatically sync output_params with intents
+      if ((node.data.originalType === 'intent' || node.type === 'intent') && changedValues.intents) {
+        const intents = changedValues.intents || [];
+        const output_params = intents.map((intent: any) => ({
+          name: intent.id || intent.name,
+          type: 'string',
+          desc: `意图: ${intent.name || intent.id}`
+        }));
+
+        // Update with both intents and synced output_params
+        onUpdate(node.id, {
+          ...allValues,
+          output_params
+        });
+      } else {
+        onUpdate(node.id, allValues);
+      }
     }
   };
 
@@ -204,9 +220,56 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({ node, nodes = [], 
       if (nodeType === 'end') {
           return <div style={{ color: '#999', fontSize: '12px' }}>该节点无输出参数</div>;
       }
-      
-      // For start node and system nodes (llm, knowledge, tool, doc_parser, excel_parser, output), render read-only output params
-      const systemNodes = ['start', 'llm', 'knowledge', 'tool', 'doc_parser', 'excel_parser', 'output'];
+
+      // For intent node, output params are dynamically generated from intents list
+      if (nodeType === 'intent') {
+          const intents = form.getFieldValue('intents') || [];
+
+          return (
+              <div style={{ fontSize: '12px' }}>
+                  <div style={{ marginBottom: '12px', color: '#666' }}>
+                      <Text type="secondary">
+                          输出参数基于配置的意图自动生成。每个意图对应一个输出连线点。
+                      </Text>
+                  </div>
+
+                  {intents.length === 0 ? (
+                      <div style={{ padding: '12px', background: '#f5f5f5', borderRadius: '4px', textAlign: 'center', color: '#999' }}>
+                          暂无输出参数，请先在"系统参数"中添加意图
+                      </div>
+                  ) : (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                          {intents.map((intent: any, index: number) => (
+                              <div
+                                  key={intent.id || index}
+                                  style={{
+                                      display: 'flex',
+                                      gap: '8px',
+                                      padding: '8px',
+                                      background: '#fafafa',
+                                      borderRadius: '4px',
+                                      border: '1px solid #e8e8e8'
+                                  }}
+                              >
+                                  <div style={{ flex: 1 }}>
+                                      <div style={{ fontWeight: 'bold', marginBottom: '2px' }}>
+                                          {intent.name || intent.id || `意图${index + 1}`}
+                                      </div>
+                                      <div style={{ fontSize: '11px', color: '#666' }}>
+                                          输出字段: intent_name (string)
+                                      </div>
+                                  </div>
+                                  <Tag color="orange">{intent.is_fallback ? '默认' : '分支'}</Tag>
+                              </div>
+                          ))}
+                      </div>
+                  )}
+              </div>
+          );
+      }
+
+      // For start node and system nodes (llm, knowledge, tool, doc_parser, excel_parser, output, for_loop, code_block), render read-only output params
+      const systemNodes = ['start', 'llm', 'knowledge', 'tool', 'doc_parser', 'excel_parser', 'output', 'for_loop', 'code_block'];
       if (systemNodes.includes(nodeType)) {
           return (
             <Form.List name="output_params">
@@ -420,6 +483,69 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({ node, nodes = [], 
       case 'output':
           return (
               <>
+                  <Divider orientation="left">意图识别配置</Divider>
+                  <div style={{
+                      background: '#e6f7ff',
+                      border: '1px solid #91d5ff',
+                      borderRadius: '4px',
+                      padding: '12px',
+                      marginBottom: '16px'
+                  }}>
+                      <Text type="secondary" style={{ fontSize: '12px' }}>
+                          <strong>为意图识别节点配置此节点的能力描述：</strong><br />
+                          • 意图名称：此功能的可读名称<br />
+                          • 示例语句：用户可能说的自然语言表达<br />
+                          • 期望参数：需要从用户输入中提取的参数
+                      </Text>
+                  </div>
+
+                  <Form.Item
+                      name="intent_name"
+                      label="能力/意图名称"
+                      tooltip="此功能的可读名称，供意图识别节点使用"
+                      rules={[{ required: false, message: '请输入能力名称' }]}
+                  >
+                      <Input placeholder="例如: 查询订单、申请退款、投诉建议" />
+                  </Form.Item>
+
+                  <Form.Item
+                      name="intent_examples"
+                      label="用户可能怎么说"
+                      tooltip="每行一条自然语言示例，帮助LLM理解用户意图"
+                  >
+                      <Input.TextArea
+                          rows={4}
+                          placeholder="例如:&#10;查一下我的订单&#10;我的订单在哪&#10;查询订单物流状态&#10;我要查订单ABC123"
+                          style={{ fontSize: '12px' }}
+                      />
+                  </Form.Item>
+
+                  <Form.Item
+                      name="intent_slots"
+                      label="期望参数（槽位）"
+                      tooltip="需要从用户输入中提取的参数，JSON格式"
+                  >
+                      <Input.TextArea
+                          rows={3}
+                          placeholder='{"order_id": "string", "product_name": "string"}'
+                          style={{ fontFamily: 'monospace', fontSize: '11px' }}
+                      />
+                  </Form.Item>
+
+                  <Form.Item
+                      name="is_fallback"
+                      label="设为默认兜底"
+                      valuePropName="checked"
+                      tooltip="当无法识别用户意图时，默认跳转到此节点（全局唯一）"
+                  >
+                      <Select placeholder="是否设为默认兜底">
+                          <Option value={false}>否</Option>
+                          <Option value={true}>是（默认兜底）</Option>
+                      </Select>
+                  </Form.Item>
+
+                  <Divider orientation="left">输出配置</Divider>
+
                   <Form.Item
                       name="output_template"
                       label="输出模板"
@@ -433,6 +559,372 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({ node, nodes = [], 
                   </Form.Item>
                   <div style={{ color: '#999', fontSize: '12px', marginTop: '-8px', marginBottom: '16px' }}>
                       使用 &lbrace;&lbrace;变量名&rbrace;&rbrace; 引用上游变量，多个变量可自由拼接
+                  </div>
+              </>
+          );
+      case 'for_loop':
+          return (
+              <>
+                  <Form.Item
+                      name="array_input"
+                      label="输入数组"
+                      tooltip="选择要遍历的数组变量（仅显示数组类型）"
+                      extra={
+                          upstreamVariables.filter(v => v.type === 'string[]' || v.type === 'object[]').length > 0 && (
+                              <div style={{ marginTop: 4 }}>
+                                  <Text type="secondary" style={{ fontSize: '11px' }}>快速选择: </Text>
+                                  {upstreamVariables
+                                      .filter(v => v.type === 'string[]' || v.type === 'object[]')
+                                      .map(v => (
+                                          <Typography.Link
+                                              key={v.value}
+                                              onClick={() => form.setFieldValue('array_input', `{{${v.value}}}`)}
+                                              style={{ fontSize: '11px', marginLeft: 4 }}
+                                          >
+                                              {v.label}
+                                          </Typography.Link>
+                                      ))}
+                              </div>
+                          )
+                      }
+                  >
+                      <Input placeholder="{{node_id.field_name}}" />
+                  </Form.Item>
+                  <Form.Item
+                      name="item_alias"
+                      label="当前项别名"
+                      initialValue="item"
+                      tooltip="循环体内引用当前项的变量名"
+                  >
+                      <Input placeholder="默认: item" />
+                  </Form.Item>
+                  <Form.Item
+                      name="max_iterations"
+                      label="最大迭代次数"
+                      initialValue={50}
+                      tooltip="防止无限循环，最多执行多少次迭代"
+                  >
+                      <Input type="number" min={1} placeholder="默认: 50" />
+                  </Form.Item>
+                  <Form.Item
+                      name="on_error"
+                      label="错误处理"
+                      initialValue="skip"
+                      tooltip="当某次迭代失败时如何处理"
+                  >
+                      <Select placeholder="选择错误处理方式">
+                          <Option value="skip">跳过（继续下一次迭代）</Option>
+                          <Option value="stop">终止（停止整个循环）</Option>
+                      </Select>
+                  </Form.Item>
+              </>
+          );
+      case 'code_block':
+          return (
+              <>
+                  <div style={{
+                      background: '#fff7e6',
+                      border: '1px solid #ffd8bf',
+                      borderRadius: '4px',
+                      padding: '12px',
+                      marginBottom: '16px'
+                  }}>
+                      <Text type="secondary" style={{ fontSize: '12px' }}>
+                          <strong>使用说明：</strong><br />
+                          • 所有输入变量自动注入到 <code>params</code> 字典中<br />
+                          • 处理结果必须写入 <code>output</code> 字典<br />
+                          • 示例: <code>output = {"{result: params['value'] * 2}"}</code>
+                      </Text>
+                  </div>
+
+                  <Form.Item
+                      name="code"
+                      label="Python 代码"
+                      rules={[{ required: true, message: '请输入Python代码' }]}
+                      tooltip="编写Python代码处理数据，结果存入output字典"
+                  >
+                      <Input.TextArea
+                          rows={15}
+                          placeholder={`# 示例代码\n# 输入变量通过 params 字典访问\n# 处理结果必须存入 output 字典\n\nresult = sum(params.get("numbers", []))\navg = result / len(params.get("numbers", [1])) if params.get("numbers") else 0\n\noutput = {\n    "total": result,\n    "average": avg,\n    "message": f"总计: {result}, 平均: {avg:.2f}"\n}`}
+                          style={{
+                              fontFamily: 'Monaco, Menlo, "Ubuntu Mono", Consolas, monospace',
+                              fontSize: '12px',
+                              lineHeight: '1.5'
+                          }}
+                      />
+                  </Form.Item>
+
+                  <div style={{ color: '#999', fontSize: '12px', marginTop: '-8px', marginBottom: '16px' }}>
+                      <strong>安全限制：</strong>禁止文件操作、网络请求、import语句（白名单模块除外）
+                  </div>
+
+                  <Form.Item
+                      name="timeout"
+                      label="超时时间（秒）"
+                      initialValue={5}
+                      tooltip="代码执行超时时间，防止死循环"
+                  >
+                      <Input type="number" min={1} max={30} placeholder="默认: 5" />
+                  </Form.Item>
+              </>
+          );
+      case 'intent':
+          return (
+              <>
+                  <div style={{
+                      background: '#fff7e6',
+                      border: '1px solid #ffd8bf',
+                      borderRadius: '4px',
+                      padding: '12px',
+                      marginBottom: '16px'
+                  }}>
+                      <Text type="secondary" style={{ fontSize: '12px' }}>
+                          <strong>意图识别配置说明：</strong><br />
+                          • 手动添加意图或从已配置的 Output 节点自动聚合<br />
+                          • 使用 LLM Zero-Shot 分类识别用户意图<br />
+                          • 自动提取参数（槽位）并输出结构化结果
+                      </Text>
+                  </div>
+
+                  <Form.Item
+                      name="user_input_source"
+                      label="用户输入来源"
+                      tooltip="选择包含用户原始文本的上游变量"
+                      extra={
+                          upstreamVariables.filter(v => v.type === 'string').length > 0 && (
+                              <div style={{ marginTop: 4 }}>
+                                  <Text type="secondary" style={{ fontSize: '11px' }}>快速选择: </Text>
+                                  {upstreamVariables
+                                      .filter(v => v.type === 'string')
+                                      .slice(0, 3)
+                                      .map(v => (
+                                          <Typography.Link
+                                              key={v.value}
+                                              onClick={() => form.setFieldValue('user_input_source', `{{${v.value}}}`)}
+                                              style={{ fontSize: '11px', marginLeft: 4 }}
+                                          >
+                                              {v.label}
+                                          </Typography.Link>
+                                      ))}
+                              </div>
+                          )
+                      }
+                  >
+                      <Input placeholder="{{start_node.rawQuery}}" />
+                  </Form.Item>
+
+                  <Form.Item
+                      name="model"
+                      label="LLM 模型"
+                      tooltip="选择用于意图识别的大模型"
+                  >
+                      <Select placeholder="选择模型" loading={llmModels.length === 0}>
+                          {llmModels.map(model => (
+                              <Option key={model.id} value={model.id}>{model.name}</Option>
+                          ))}
+                      </Select>
+                  </Form.Item>
+
+                  <Form.Item
+                      name="confidence_threshold"
+                      label="置信度阈值"
+                      initialValue={0.3}
+                      tooltip="低于此阈值将视为未知意图 (0.0-1.0)"
+                  >
+                      <Input type="number" min={0} max={1} step={0.1} placeholder="默认: 0.3" />
+                  </Form.Item>
+
+                  <Form.Item
+                      name="fallback_node_id"
+                      label="兜底节点ID"
+                      tooltip="当无法识别意图时，默认跳转到的节点ID"
+                  >
+                      <Input placeholder="默认输出节点ID" />
+                  </Form.Item>
+
+                  <Form.Item
+                      name="timeout"
+                      label="超时时间（秒）"
+                      initialValue={10}
+                      tooltip="LLM调用超时时间"
+                  >
+                      <Input type="number" min={1} max={60} placeholder="默认: 10" />
+                  </Form.Item>
+
+                  <Divider orientation="left">意图列表配置</Divider>
+
+                  {/* Intent List Management */}
+                  <Form.List name="intents">
+                      {(fields, { add, remove }) => (
+                          <>
+                              {fields.map(({ key, name, ...restField }) => (
+                                  <div key={key} style={{
+                                      marginBottom: '16px',
+                                      padding: '12px',
+                                      background: '#fafafa',
+                                      borderRadius: '6px',
+                                      border: '1px solid #e8e8e8'
+                                  }}>
+                                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                                          <Text strong>意图 #{name + 1}</Text>
+                                          <Button
+                                              type="link"
+                                              danger
+                                              size="small"
+                                              onClick={() => remove(name)}
+                                              icon={<span>×</span>}
+                                          >
+                                              删除
+                                          </Button>
+                                      </div>
+
+                                      <Form.Item
+                                          {...restField}
+                                          name={[name, 'id']}
+                                          label="意图ID"
+                                          style={{ marginBottom: '8px' }}
+                                          rules={[{ required: true, message: '请输入意图ID' }]}
+                                      >
+                                          <Input placeholder="例如: query_order" style={{ fontSize: '12px' }} />
+                                      </Form.Item>
+
+                                      <Form.Item
+                                          {...restField}
+                                          name={[name, 'name']}
+                                          label="意图名称"
+                                          style={{ marginBottom: '8px' }}
+                                          rules={[{ required: true, message: '请输入意图名称' }]}
+                                      >
+                                          <Input placeholder="例如: 查询订单" style={{ fontSize: '12px' }} />
+                                      </Form.Item>
+
+                                      <Form.Item
+                                          {...restField}
+                                          name={[name, 'examples']}
+                                          label="示例语句"
+                                          style={{ marginBottom: '8px' }}
+                                          tooltip="每行一条，用分号或换行分隔"
+                                      >
+                                          <Input.TextArea
+                                              rows={3}
+                                              placeholder="查一下我的订单; 我的订单在哪; 查询订单物流状态"
+                                              style={{ fontSize: '12px' }}
+                                          />
+                                      </Form.Item>
+
+                                      <Form.Item
+                                          {...restField}
+                                          name={[name, 'slots']}
+                                          label="期望参数"
+                                          style={{ marginBottom: '8px' }}
+                                          tooltip='JSON格式，例如: {"order_id": "string"}'
+                                      >
+                                          <Input.TextArea
+                                              rows={2}
+                                              placeholder='{"order_id": "string", "product_name": "string"}'
+                                              style={{ fontFamily: 'monospace', fontSize: '11px' }}
+                                          />
+                                      </Form.Item>
+
+                                      <Form.Item
+                                          {...restField}
+                                          name={[name, 'node_id']}
+                                          label="关联节点ID"
+                                          style={{ marginBottom: '0' }}
+                                          tooltip="匹配此意图后跳转到的节点ID"
+                                      >
+                                          <Select placeholder="选择节点" allowClear showSearch>
+                                              {nodes && nodes.map(n => (
+                                                  <Option key={n.id} value={n.id}>
+                                                      {n.data.label || n.id} ({n.type})
+                                                  </Option>
+                                              ))}
+                                          </Select>
+                                      </Form.Item>
+
+                                      <Form.Item
+                                          {...restField}
+                                          name={[name, 'is_fallback']}
+                                          valuePropName="checked"
+                                          style={{ marginBottom: 0, marginTop: '8px' }}
+                                      >
+                                          <Checkbox>设为默认兜底</Checkbox>
+                                      </Form.Item>
+                                  </div>
+                              ))}
+
+                              <Form.Item>
+                                  <Button
+                                      type="dashed"
+                                      onClick={() => add()}
+                                      block
+                                      icon={<span>+</span>}
+                                  >
+                                      添加意图
+                                  </Button>
+                              </Form.Item>
+
+                              {fields.length === 0 && (
+                                  <div style={{
+                                      textAlign: 'center',
+                                      color: '#999',
+                                      fontSize: '12px',
+                                      marginTop: '8px'
+                                  }}>
+                                      暂无配置的意图，点击上方按钮添加
+                                  </div>
+                              )}
+                          </>
+                      )}
+                  </Form.List>
+
+                  {/* Auto-import from Output nodes */}
+                  <div style={{
+                      marginTop: '16px',
+                      padding: '12px',
+                      background: '#f0f5ff',
+                      borderRadius: '4px',
+                      border: '1px dashed #adc6ff'
+                  }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Text strong style={{ fontSize: '12px' }}>从 Output 节点自动导入：</Text>
+                          <Button
+                              size="small"
+                              type="primary"
+                              ghost
+                              onClick={() => {
+                                  // Auto-import from output nodes
+                                  const outputNodes = nodes?.filter(n => n.data.originalType === 'output' || n.type === 'output') || [];
+                                  const currentIntents = form.getFieldValue('intents') || [];
+
+                                  const newIntents = outputNodes.map((n: any) => {
+                                      // Check if this node is already imported
+                                      const existing = currentIntents.find((intent: any) => intent.node_id === n.id);
+                                      if (existing) return existing;
+
+                                      return {
+                                          id: n.id,
+                                          name: n.data.intent_name || n.data.label || n.id,
+                                          examples: n.data.intent_examples || '',
+                                          slots: n.data.intent_slots || '{}',
+                                          node_id: n.id,
+                                          is_fallback: n.data.is_fallback || false
+                                      };
+                                  });
+
+                                  form.setFieldsValue({ intents: [...currentIntents, ...newIntents] });
+                              }}
+                          >
+                              自动导入
+                          </Button>
+                      </div>
+                      <div style={{ marginTop: '8px', fontSize: '11px', color: '#666' }}>
+                          {nodes && nodes.filter(n => n.data.originalType === 'output' || n.type === 'output').length > 0 ? (
+                              <span>检测到 {nodes.filter(n => n.data.originalType === 'output' || n.type === 'output').length} 个 Output 节点可导入</span>
+                          ) : (
+                              <span>暂无 Output 节点</span>
+                          )}
+                      </div>
                   </div>
               </>
           );
