@@ -878,7 +878,23 @@ async def intent_node(state: AgentState, config: Dict[str, Any], node_id: str):
 
     # Build capabilities list from workflow graph
     # This would be passed in via config or derived from workflow structure
-    capabilities = config.get('capabilities', [])
+    # Support both 'capabilities' (backend format) and 'intents' (frontend format)
+    capabilities = config.get('capabilities', []) or config.get('intents', [])
+
+    # Convert 'intents' format to 'capabilities' format if needed
+    if not capabilities and config.get('intents'):
+        # Convert from frontend 'intents' format to backend 'capabilities' format
+        intents = config.get('intents', [])
+        capabilities = []
+        for intent in intents:
+            capabilities.append({
+                'id': intent.get('id', intent.get('name', '')),
+                'name': intent.get('name', intent.get('id', '')),
+                'examples': intent.get('examples', '').split(';') if isinstance(intent.get('examples'), str) else intent.get('examples', []),
+                'slots': {},  # No slot definitions in basic intents format
+                'node_id': '',  # Will be matched by intent_id
+                'is_fallback': intent.get('is_fallback', False)
+            })
 
     if not capabilities:
         # No capabilities configured
@@ -925,8 +941,7 @@ async def intent_node(state: AgentState, config: Dict[str, Any], node_id: str):
 
     # Call LLM
     try:
-        # Import here to avoid circular dependency
-        from app.services.nodes import get_llm_config, resolve_variables
+        # get_llm_config and resolve_variables are defined at module level
         from langchain_openai import ChatOpenAI
         from langchain_core.messages import HumanMessage, SystemMessage
         import json

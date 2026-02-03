@@ -46,6 +46,16 @@ const initialNodes: Node[] = [
 let id = 0;
 const getId = () => `node_${id++}`;
 
+// Define nodeTypes outside component to avoid recreation on each render
+const nodeTypes = {
+  start: StartNode,
+  common: CommonNode,
+  end: EndNode,
+  for_loop: ForLoopNode,
+  code_block: CodeBlockNode,
+  intent: IntentNode,
+};
+
 const WorkflowStudioContent: React.FC = () => {
   const { id: workflowId } = useParams();
   const navigate = useNavigate();
@@ -137,16 +147,14 @@ const WorkflowStudioContent: React.FC = () => {
                     type: backendType, // 'start', 'end', 'llm', 'tool', etc.
                     position: node.position,
                     data: {
+                        ...restData,  // Spread restData first to preserve all fields
                         label: node.data.label,
-                        // Pass through other known fields
-                        model: node.data.model,
-                        prompt: node.data.system_prompt, // Frontend uses system_prompt, backend uses prompt? Let's check schema.
-                        temperature: node.data.temperature ? Number(node.data.temperature) : 0.7,
-                        tool_id: node.data.tool_name, // Frontend uses tool_name?
-                        knowledge_id: node.data.knowledge_base_id,
-                        // Keep original data for frontend restoration if needed,
-                        // but be aware that backend validation might fail if type mismatches.
-                        ...restData,
+                        // Explicitly set these fields, overriding restData if present
+                        ...(node.data.model !== undefined && { model: node.data.model }),
+                        ...(node.data.system_prompt !== undefined && { prompt: node.data.system_prompt }),
+                        ...(node.data.temperature !== undefined && { temperature: Number(node.data.temperature) }),
+                        ...(node.data.tool_name !== undefined && { tool_id: node.data.tool_name }),
+                        ...(node.data.knowledge_base_id !== undefined && { knowledge_id: node.data.knowledge_base_id }),
                         // Explicitly include output_params as it's used in frontend
                         output_params: output_params
                     }
@@ -215,13 +223,14 @@ const WorkflowStudioContent: React.FC = () => {
                     type: backendType,
                     position: node.position,
                     data: {
+                        ...restData,  // Spread restData first to preserve all fields
                         label: node.data.label,
-                        model: node.data.model,
-                        prompt: node.data.system_prompt,
-                        temperature: node.data.temperature ? Number(node.data.temperature) : 0.7,
-                        tool_id: node.data.tool_name,
-                        knowledge_id: node.data.knowledge_base_id,
-                        ...restData,
+                        // Explicitly set these fields, overriding restData if present
+                        ...(node.data.model !== undefined && { model: node.data.model }),
+                        ...(node.data.system_prompt !== undefined && { prompt: node.data.system_prompt }),
+                        ...(node.data.temperature !== undefined && { temperature: Number(node.data.temperature) }),
+                        ...(node.data.tool_name !== undefined && { tool_id: node.data.tool_name }),
+                        ...(node.data.knowledge_base_id !== undefined && { knowledge_id: node.data.knowledge_base_id }),
                         output_params: output_params
                     }
                 };
@@ -293,15 +302,6 @@ const WorkflowStudioContent: React.FC = () => {
         message.error('Failed to export YAML');
     }
   };
-
-  const nodeTypes = useMemo(() => ({
-    start: StartNode,
-    common: CommonNode,
-    end: EndNode,
-    for_loop: ForLoopNode,
-    code_block: CodeBlockNode,
-    intent: IntentNode,
-  }), []);
 
   const onConnect = useCallback(
     (params: Connection | Edge) => setEdges((eds) => addEdge(params, eds)),

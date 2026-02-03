@@ -40,24 +40,20 @@ export const PropertyPanel: React.FC<PropertyPanelProps> = ({ node, nodes = [], 
           });
       }
 
-      // Fetch LLM models if the node type is 'llm'
-      if (node.data.originalType === 'llm' || node.type === 'llm') {
+      // Fetch LLM models if the node type is 'llm' or 'intent'
+      if (node.data.originalType === 'llm' || node.type === 'llm' ||
+          node.data.originalType === 'intent' || node.type === 'intent') {
           aiResourcesApi.getAvailable('text_llm').then(response => {
               const models = response.data;
               setLlmModels(models);
-              
+
               // Set default model if not already set
-              if (!node.data.model) {
+              if (!node.data.model && models.length > 0) {
                   const defaultModel = models.find((m: AiResource) => m.is_default);
-                  if (defaultModel) {
-                      form.setFieldValue('model', defaultModel.id);
-                      // Trigger update to save the default value
-                      onUpdate(node.id, { ...node.data, model: defaultModel.id });
-                  } else if (models.length > 0) {
-                      // Fallback to first available model
-                       form.setFieldValue('model', models[0].id);
-                       onUpdate(node.id, { ...node.data, model: models[0].id });
-                  }
+                  const targetModel = defaultModel || models[0];
+                  form.setFieldValue('model', targetModel.id);
+                  // Trigger update to save the default value
+                  onUpdate(node.id, { ...node.data, model: targetModel.id });
               }
           }).catch(err => {
               console.error("Failed to fetch LLM models:", err);
